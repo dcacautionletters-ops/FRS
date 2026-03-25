@@ -6,8 +6,8 @@ import plotly.express as px
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 
 # --- 1. UI CONFIGURATION ---
-st.set_page_config(page_title="VMS Universal Reporting", layout="wide")
-MASTER_PASSWORD = "VMS@123"
+st.set_page_config(page_title="FRS Universal Reporting", layout="wide")
+MASTER_PASSWORD = "FRS@123"
 
 st.markdown("""
     <style>
@@ -34,7 +34,7 @@ st.markdown("""
 # --- 2. AUTHENTICATION ---
 if 'authenticated' not in st.session_state: st.session_state.authenticated = False
 if not st.session_state.authenticated:
-    st.markdown('<p class="welcome-note">VMS Reporting System</p>', unsafe_allow_html=True)
+    st.markdown('<p class="welcome-note">FRS Reporting System</p>', unsafe_allow_html=True)
     col1, col2, col3 = st.columns([1, 1.4, 1])
     with col2:
         p = st.text_input("Password", type="password")
