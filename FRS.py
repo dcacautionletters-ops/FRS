@@ -44,7 +44,6 @@ if not st.session_state.authenticated:
     st.stop()
 
 # --- 3. CORE LOGIC ---
-# Aggressive Blacklist: catches variations (e.g. "SOFT SKILL" matches "SOFT SKILLS")
 KEYWORDS_TO_IGNORE = ["BADMINTON", "BASKETBALL", "CROSS FITNESS", "SWIMMING", "ZUMBA", "TABLE TENNIS", 
                       "FREESLOT", "FREE SLOT", "SOFT SKILL", "ATOM", "DSA"]
 ATT_COL_NAME = "Attended Hours with Approved Leave Percentage"
@@ -87,7 +86,6 @@ def apply_styles(ws, threshold, is_summary=False):
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
         for cell in row:
             cell.border, cell.alignment = border, Alignment(horizontal="center")
-            # Bold the Total column
             if ws.cell(row=1, column=cell.column).value == "Total":
                 cell.font = Font(bold=True)
             
@@ -105,7 +103,6 @@ def process_grid(data_df, cols, batch_subjects, threshold):
     full_grid = data_df.pivot_table(index=[cols['roll'], cols['name'], cols['batch'], cols['sem']],
                                     columns=cols['subject'], values=cols['attendance'], sort=False).reset_index()
     
-    # Apply aggressive filtering
     final_subjects = [s for s in batch_subjects if is_valid_subject(s)]
     
     for sub in final_subjects:
@@ -155,22 +152,17 @@ if uploaded_file:
         elif any(x in cs for x in ["Course", "Subject"]): c_map['subject'] = c
         elif ATT_COL_NAME in cs: c_map['attendance'] = c
 
-    # Filter out blacklisted subjects from the main DataFrame immediately
     df = df[df[c_map['subject']].apply(is_valid_subject)]
-    
     df['Dept'] = df[c_map['batch']].astype(str).apply(lambda x: x.split()[0].upper())
-    
     all_subjects = sorted(df[c_map['subject']].unique())
     
     with st.sidebar:
         st.markdown("### 🛠️ Global Parameters")
         threshold = st.slider("Shortage Threshold (%)", 50, 95, 75, 5)
         dept_choice = st.selectbox("Select Department", ["All Departments"] + sorted(df['Dept'].unique()))
-        
         st.divider()
         st.markdown("### 🔍 Exclusion Filters")
         exclude_subjects = st.multiselect("Exclude Subjects/Faculty", all_subjects)
-        
         if st.button("Logout"): st.session_state.authenticated = False; st.rerun()
 
     if exclude_subjects:
@@ -192,21 +184,22 @@ if uploaded_file:
         for d_idx, dept in enumerate(active_depts):
             d_df = df[df['Dept'] == dept]
             
+            # --- FIX: UNIVERSAL SERIES DETECTION ---
             unique_batches = d_df[c_map['batch']].astype(str).unique()
             series_list = set()
             for b in unique_batches:
-                if "2025" in b: series_list.add("BCA 2025")
-                else: series_list.add(' '.join(b.split()[:2]))
+                parts = b.split()
+                if len(parts) >= 2:
+                    # Takes first two words (e.g., "BCA 2025" or "MCA 2024")
+                    series_list.add(f"{parts[0]} {parts[1]}")
+                else:
+                    series_list.add(parts[0])
             series_list = sorted(list(series_list))
             
             with tabs[d_idx+1]:
                 for series in series_list:
-                    if series == "BCA 2025":
-                        s_df = d_df[d_df[c_map['batch']].str.contains("2025")]
-                    else:
-                        s_df = d_df[d_df[c_map['batch']].astype(str).str.contains(series)]
-                    
-                    # Filtering subjects for the tab
+                    # Filters dataframe for that specific series (e.g., only MCA 2025)
+                    s_df = d_df[d_df[c_map['batch']].astype(str).str.contains(series)]
                     s_subs = sorted([s for s in s_df[c_map['subject']].unique() if is_valid_subject(s)])
                     
                     gen_grid, _ = process_grid(s_df, c_map, s_subs, threshold)
@@ -246,10 +239,9 @@ if uploaded_file:
                     if not subject_impact.empty and subject_impact.sum() > 0:
                         impact_df = subject_impact.reset_index()
                         impact_df.columns = ['Subject', 'Students']
-                        if not impact_df.empty:
-                            st.plotly_chart(px.pie(impact_df.head(10), names='Subject', values='Students', hole=0.4, title="Top Subject Impact", template="plotly_dark"), use_container_width=True)
+                        st.plotly_chart(px.pie(impact_df.head(10), names='Subject', values='Students', hole=0.4, title="Top Subject Impact", template="plotly_dark"), use_container_width=True)
                 sum_df.to_excel(writer, sheet_name='SUMMARY', index=False)
             else:
-                st.success(f"No shortages found for {dept_choice}.")
+                st.success(f"No shortages found.")
 
     st.download_button(f"📥 Download {dept_choice} Report", output.getvalue(), f"VMS_{dept_choice}_Report.xlsx", use_container_width=True)
