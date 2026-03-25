@@ -34,7 +34,7 @@ st.markdown("""
 # --- 2. AUTHENTICATION ---
 if 'authenticated' not in st.session_state: st.session_state.authenticated = False
 if not st.session_state.authenticated:
-    st.markdown('<p class="welcome-note">VMS Reporting System</p>', unsafe_allow_html=True)
+    st.markdown('<p class="welcome-note">FRS Reporting System</p>', unsafe_allow_html=True)
     col1, col2, col3 = st.columns([1, 1.4, 1])
     with col2:
         p = st.text_input("Password", type="password")
