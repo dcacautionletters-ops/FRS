@@ -96,15 +96,15 @@ def apply_styles(ws, threshold, is_summary=False):
                     elif 70 <= val < threshold: cell.fill, cell.font = warn_fill, Font(bold=True, color="000000")
                 except: pass
 
-def process_grid(data_df, cols, batch_subjects, threshold, filter_shortage=True):
+def process_grid(data_df, cols, batch_subjects, threshold):
     if data_df.empty: return None, None
-    data_df = data_df.copy()
     data_df[cols['attendance']] = pd.to_numeric(data_df[cols['attendance']], errors='coerce')
     
     full_grid = data_df.pivot_table(index=[cols['roll'], cols['name'], cols['batch'], cols['sem']],
                                     columns=cols['subject'], values=cols['attendance'], sort=False).reset_index()
     
     final_subjects = [s for s in batch_subjects if is_valid_subject(s)]
+    
     for sub in final_subjects:
         if sub not in full_grid.columns: full_grid[sub] = None
         full_grid[sub] = pd.to_numeric(full_grid[sub], errors='coerce')
@@ -113,28 +113,23 @@ def process_grid(data_df, cols, batch_subjects, threshold, filter_shortage=True)
     full_grid['Theory Avg'] = full_grid[theory_cols].mean(axis=1).round(2)
     full_grid['Final Avg'] = full_grid[final_subjects].mean(axis=1).round(2)
     
-    if filter_shortage:
-        mask = (full_grid[final_subjects] < threshold).any(axis=1)
-        res_grid = full_grid[mask].copy()
-    else:
-        res_grid = full_grid.copy()
-
-    if res_grid.empty: return None, None
+    mask = (full_grid[final_subjects] < threshold).any(axis=1)
+    shortage_grid = full_grid[mask].copy()
+    if shortage_grid.empty: return None, None
     
-    res_grid['Subjects in Shortage'] = (res_grid[final_subjects] < threshold).sum(axis=1)
-    sub_counts = (res_grid[final_subjects] < threshold).sum()
+    shortage_grid['Subjects in Shortage'] = (shortage_grid[final_subjects] < threshold).sum(axis=1)
+    sub_counts = (shortage_grid[final_subjects] < threshold).sum()
     
-    if filter_shortage:
-        for sub in final_subjects:
-            res_grid[sub] = res_grid[sub].apply(lambda x: x if (pd.notnull(x) and x < threshold) else "")
+    for sub in final_subjects:
+        shortage_grid[sub] = shortage_grid[sub].apply(lambda x: x if (pd.notnull(x) and x < threshold) else "")
     
-    res_grid.insert(0, 'Sl No.', range(1, len(res_grid) + 1))
+    shortage_grid.insert(0, 'Sl No.', range(1, len(shortage_grid) + 1))
     final_cols = ['Sl No.', cols['roll'], cols['name'], cols['batch'], cols['sem']] + final_subjects + ['Subjects in Shortage', 'Theory Avg', 'Final Avg']
     
     count_row = pd.DataFrame([["", "", "", "", "No. of Students with Shortage"] + [sub_counts[s] for s in final_subjects] + ["", "", ""]], columns=final_cols)
-    res_grid = pd.concat([res_grid, count_row], ignore_index=True)
+    shortage_grid = pd.concat([shortage_grid, count_row], ignore_index=True)
     
-    return res_grid, sub_counts
+    return shortage_grid, sub_counts
 
 # --- 4. DASHBOARD INTERFACE ---
 uploaded_file = st.file_uploader("📂 Upload Universal Attendance File", type=["xlsx"])
@@ -159,18 +154,25 @@ if uploaded_file:
 
     df = df[df[c_map['subject']].apply(is_valid_subject)]
     df['Dept'] = df[c_map['batch']].astype(str).apply(lambda x: x.split()[0].upper())
+    all_subjects = sorted(df[c_map['subject']].unique())
     
     with st.sidebar:
         st.markdown("### 🛠️ Global Parameters")
         threshold = st.slider("Shortage Threshold (%)", 50, 95, 75, 5)
         dept_choice = st.selectbox("Select Department", ["All Departments"] + sorted(df['Dept'].unique()))
-        exclude_subjects = st.multiselect("Exclude Subjects", sorted(df[c_map['subject']].unique()))
+        st.divider()
+        st.markdown("### 🔍 Exclusion Filters")
+        exclude_subjects = st.multiselect("Exclude Subjects/Faculty", all_subjects)
         if st.button("Logout"): st.session_state.authenticated = False; st.rerun()
 
     if exclude_subjects:
         df = df[~df[c_map['subject']].isin(exclude_subjects)]
         
-    active_depts = [dept_choice] if dept_choice != "All Departments" else sorted(df['Dept'].unique())
+    if dept_choice != "All Departments":
+        df = df[df['Dept'] == dept_choice]
+        active_depts = [dept_choice]
+    else:
+        active_depts = sorted(df['Dept'].unique())
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -181,23 +183,26 @@ if uploaded_file:
 
         for d_idx, dept in enumerate(active_depts):
             d_df = df[df['Dept'] == dept]
+            
+            # --- FIX: UNIVERSAL SERIES DETECTION ---
             unique_batches = d_df[c_map['batch']].astype(str).unique()
-            series_list = sorted(list(set([' '.join(b.split()[:2]) for b in unique_batches])))
+            series_list = set()
+            for b in unique_batches:
+                parts = b.split()
+                if len(parts) >= 2:
+                    # Takes first two words (e.g., "BCA 2025" or "MCA 2024")
+                    series_list.add(f"{parts[0]} {parts[1]}")
+                else:
+                    series_list.add(parts[0])
+            series_list = sorted(list(series_list))
             
             with tabs[d_idx+1]:
                 for series in series_list:
+                    # Filters dataframe for that specific series (e.g., only MCA 2025)
                     s_df = d_df[d_df[c_map['batch']].astype(str).str.contains(series)]
                     s_subs = sorted([s for s in s_df[c_map['subject']].unique() if is_valid_subject(s)])
                     
-                    # 1. OVERALL DATA (0-100%)
-                    overall_grid, _ = process_grid(s_df, c_map, s_subs, threshold, filter_shortage=False)
-                    if overall_grid is not None:
-                        sn_overall = f"{series} Overall Att"[:31]
-                        overall_grid.to_excel(writer, sheet_name=sn_overall, index=False)
-                        apply_styles(writer.sheets[sn_overall], threshold)
-
-                    # 2. GENERAL SHORTAGE SUMMARY
-                    gen_grid, _ = process_grid(s_df, c_map, s_subs, threshold, filter_shortage=True)
+                    gen_grid, _ = process_grid(s_df, c_map, s_subs, threshold)
                     if gen_grid is not None:
                         with st.expander(f"👁️ {series} GENERAL SUMMARY"):
                             st.dataframe(gen_grid, hide_index=True, use_container_width=True)
@@ -206,11 +211,10 @@ if uploaded_file:
                         get_bracket_summary(s_df, c_map, s_subs).to_excel(writer, sheet_name=sn, startrow=len(gen_grid)+2, index=False)
                         apply_styles(writer.sheets[sn], threshold)
                     
-                    # 3. SECTION-WISE SHORTAGE
                     sections = sorted(s_df[c_map['batch']].unique())
                     for sec in sections:
                         sec_df = s_df[s_df[c_map['batch']] == sec]
-                        grid, counts = process_grid(sec_df, c_map, s_subs, threshold, filter_shortage=True)
+                        grid, counts = process_grid(sec_df, c_map, s_subs, threshold)
                         if grid is not None:
                             with st.expander(f"👁️ {sec}: {len(grid)-1} Shortages"):
                                 st.dataframe(grid, hide_index=True, use_container_width=True)
@@ -228,7 +232,16 @@ if uploaded_file:
                 for idx, row in sum_df.iterrows():
                     with m_cols[idx % 4]:
                         st.markdown(f'<div class="glass-metric"><div class="metric-title">{row["Section"]}</div><div class="metric-value">{row["Count"]}</div></div>', unsafe_allow_html=True)
-                st.plotly_chart(px.bar(sum_df, x='Section', y='Count', color='Section', template="plotly_dark"), use_container_width=True)
+                
+                c1, c2 = st.columns(2)
+                with c1: st.plotly_chart(px.bar(sum_df, x='Section', y='Count', color='Section', template="plotly_dark"), use_container_width=True)
+                with c2:
+                    if not subject_impact.empty and subject_impact.sum() > 0:
+                        impact_df = subject_impact.reset_index()
+                        impact_df.columns = ['Subject', 'Students']
+                        st.plotly_chart(px.pie(impact_df.head(10), names='Subject', values='Students', hole=0.4, title="Top Subject Impact", template="plotly_dark"), use_container_width=True)
                 sum_df.to_excel(writer, sheet_name='SUMMARY', index=False)
+            else:
+                st.success(f"No shortages found.")
 
     st.download_button(f"📥 Download {dept_choice} Report", output.getvalue(), f"VMS_{dept_choice}_Report.xlsx", use_container_width=True)
