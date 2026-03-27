@@ -77,6 +77,7 @@ def apply_styles(ws, threshold, is_summary=False):
     h_fill = PatternFill(start_color="2C3E50", end_color="2C3E50", fill_type="solid")
     crit_fill = PatternFill(start_color="C0392B", end_color="C0392B", fill_type="solid") 
     warn_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid") 
+    white_fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
     
     for col in range(1, ws.max_column + 1):
         cell = ws.cell(row=1, column=col)
@@ -89,11 +90,16 @@ def apply_styles(ws, threshold, is_summary=False):
             if ws.cell(row=1, column=cell.column).value == "Total":
                 cell.font = Font(bold=True)
             
+            # Color coding logic for all students
             if not is_summary and cell.column > 5:
                 try:
                     val = float(cell.value)
-                    if val < 70: cell.fill, cell.font = crit_fill, Font(bold=True, color="FFFFFF")
-                    elif 70 <= val < threshold: cell.fill, cell.font = warn_fill, Font(bold=True, color="000000")
+                    if val < 70: 
+                        cell.fill, cell.font = crit_fill, Font(bold=True, color="FFFFFF")
+                    elif 70 <= val < 75: 
+                        cell.fill, cell.font = warn_fill, Font(bold=True, color="000000")
+                    else:
+                        cell.fill, cell.font = white_fill, Font(bold=False, color="000000")
                 except: pass
 
 def process_grid(data_df, cols, batch_subjects, threshold):
@@ -113,23 +119,22 @@ def process_grid(data_df, cols, batch_subjects, threshold):
     full_grid['Theory Avg'] = full_grid[theory_cols].mean(axis=1).round(2)
     full_grid['Final Avg'] = full_grid[final_subjects].mean(axis=1).round(2)
     
-    mask = (full_grid[final_subjects] < threshold).any(axis=1)
-    shortage_grid = full_grid[mask].copy()
-    if shortage_grid.empty: return None, None
+    # --- TWEAK: REMOVED SHORTAGE MASK TO SHOW ALL STUDENTS ---
+    all_students_grid = full_grid.copy()
     
-    shortage_grid['Subjects in Shortage'] = (shortage_grid[final_subjects] < threshold).sum(axis=1)
-    sub_counts = (shortage_grid[final_subjects] < threshold).sum()
+    all_students_grid['Subjects in Shortage'] = (all_students_grid[final_subjects] < threshold).sum(axis=1)
+    sub_counts = (all_students_grid[final_subjects] < threshold).sum()
     
-    for sub in final_subjects:
-        shortage_grid[sub] = shortage_grid[sub].apply(lambda x: x if (pd.notnull(x) and x < threshold) else "")
+    # We keep the values intact for the display (no empty strings for students above threshold)
+    # so we can see the full 0-100 range.
     
-    shortage_grid.insert(0, 'Sl No.', range(1, len(shortage_grid) + 1))
+    all_students_grid.insert(0, 'Sl No.', range(1, len(all_students_grid) + 1))
     final_cols = ['Sl No.', cols['roll'], cols['name'], cols['batch'], cols['sem']] + final_subjects + ['Subjects in Shortage', 'Theory Avg', 'Final Avg']
     
     count_row = pd.DataFrame([["", "", "", "", "No. of Students with Shortage"] + [sub_counts[s] for s in final_subjects] + ["", "", ""]], columns=final_cols)
-    shortage_grid = pd.concat([shortage_grid, count_row], ignore_index=True)
+    all_students_grid = pd.concat([all_students_grid, count_row], ignore_index=True)
     
-    return shortage_grid, sub_counts
+    return all_students_grid, sub_counts
 
 # --- 4. DASHBOARD INTERFACE ---
 uploaded_file = st.file_uploader("📂 Upload Universal Attendance File", type=["xlsx"])
@@ -184,13 +189,11 @@ if uploaded_file:
         for d_idx, dept in enumerate(active_depts):
             d_df = df[df['Dept'] == dept]
             
-            # --- FIX: UNIVERSAL SERIES DETECTION ---
             unique_batches = d_df[c_map['batch']].astype(str).unique()
             series_list = set()
             for b in unique_batches:
                 parts = b.split()
                 if len(parts) >= 2:
-                    # Takes first two words (e.g., "BCA 2025" or "MCA 2024")
                     series_list.add(f"{parts[0]} {parts[1]}")
                 else:
                     series_list.add(parts[0])
@@ -198,7 +201,6 @@ if uploaded_file:
             
             with tabs[d_idx+1]:
                 for series in series_list:
-                    # Filters dataframe for that specific series (e.g., only MCA 2025)
                     s_df = d_df[d_df[c_map['batch']].astype(str).str.contains(series)]
                     s_subs = sorted([s for s in s_df[c_map['subject']].unique() if is_valid_subject(s)])
                     
@@ -216,13 +218,13 @@ if uploaded_file:
                         sec_df = s_df[s_df[c_map['batch']] == sec]
                         grid, counts = process_grid(sec_df, c_map, s_subs, threshold)
                         if grid is not None:
-                            with st.expander(f"👁️ {sec}: {len(grid)-1} Shortages"):
+                            with st.expander(f"👁️ {sec}: {len(grid)-1} Students"):
                                 st.dataframe(grid, hide_index=True, use_container_width=True)
                             sn_sec = str(sec).replace("/", "-")[:31]
                             grid.to_excel(writer, sheet_name=sn_sec, index=False)
                             get_bracket_summary(sec_df, c_map, s_subs).to_excel(writer, sheet_name=sn_sec, startrow=len(grid)+2, index=False)
                             apply_styles(writer.sheets[sn_sec], threshold)
-                            summaries.append({'Section': sec, 'Count': len(grid)-1})
+                            summaries.append({'Section': sec, 'Count': (grid[final_subjects] < threshold).any(axis=1).sum()})
                             subject_impact = subject_impact.add(counts, fill_value=0)
 
         with tabs[0]:
@@ -231,7 +233,7 @@ if uploaded_file:
                 m_cols = st.columns(min(len(sum_df), 4))
                 for idx, row in sum_df.iterrows():
                     with m_cols[idx % 4]:
-                        st.markdown(f'<div class="glass-metric"><div class="metric-title">{row["Section"]}</div><div class="metric-value">{row["Count"]}</div></div>', unsafe_allow_html=True)
+                        st.markdown(f'<div class="glass-metric"><div class="metric-title">{row["Section"]}</div><div class="metric-value">{row["Count"]}</div><div style="color:#aaa; font-size:12px">Shortages</div></div>', unsafe_allow_html=True)
                 
                 c1, c2 = st.columns(2)
                 with c1: st.plotly_chart(px.bar(sum_df, x='Section', y='Count', color='Section', template="plotly_dark"), use_container_width=True)
