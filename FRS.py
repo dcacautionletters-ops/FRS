@@ -25,24 +25,27 @@ st.markdown("""
         border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 15px;
         padding: 25px; margin: 10px 0; text-align: center;
         box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        position: relative;
     }
     .metric-value { font-size: 42px; font-weight: 800; color: #92fe9d; }
     .metric-title { color: #ffffff; font-size: 14px; font-weight: 600; text-transform: uppercase; }
     
-    /* Transparent button to make glass headers interactive */
-    .stButton>button {
-        background-color: transparent !important;
+    /* Layer 1: Surgical Button Styling to make headers interactive */
+    .stButton > button {
+        background: transparent !important;
         border: none !important;
-        color: inherit !important;
         padding: 0 !important;
-        width: 100% !important;
+        color: inherit !important;
+        width: 100%;
     }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. AUTHENTICATION ---
+# --- 2. AUTHENTICATION & STATE ---
 if 'authenticated' not in st.session_state: st.session_state.authenticated = False
-if 'view_section' not in st.session_state: st.session_state.view_section = None
+# New State Layers
+if 'sel_section' not in st.session_state: st.session_state.sel_section = None
+if 'sel_subject' not in st.session_state: st.session_state.sel_subject = None
 
 if not st.session_state.authenticated:
     st.markdown('<p class="welcome-note">VMS Reporting System</p>', unsafe_allow_html=True)
@@ -54,7 +57,7 @@ if not st.session_state.authenticated:
             else: st.error("Access Denied")
     st.stop()
 
-# --- 3. CORE LOGIC (UNTOUCHED) ---
+# --- 3. CORE LOGIC (KEEPING YOUR EXACT FUNCTIONS) ---
 KEYWORDS_TO_IGNORE = ["BADMINTON", "BASKETBALL", "CROSS FITNESS", "SWIMMING", "ZUMBA", "TABLE TENNIS", 
                       "FREESLOT", "FREE SLOT", "SOFT SKILL", "ATOM", "DSA"]
 ATT_COL_NAME = "Attended Hours with Approved Leave Percentage"
@@ -98,6 +101,12 @@ def apply_styles(ws, threshold, is_summary=False):
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
         for cell in row:
             cell.border, cell.alignment = border, Alignment(horizontal="center")
+            if not is_summary and cell.column > 5:
+                try:
+                    val = float(cell.value)
+                    if val < 70: cell.fill, cell.font = crit_fill, Font(bold=True, color="FFFFFF")
+                    elif 70 <= val < threshold: cell.fill, cell.font = warn_fill, Font(bold=True, color="000000")
+                except: pass
 
 def process_grid(data_df, cols, batch_subjects, low_thresh, high_thresh, show_all=False):
     if data_df.empty: return None, None
@@ -148,15 +157,15 @@ if uploaded_file:
     
     with st.sidebar:
         st.markdown("### 🛠️ Global Parameters")
-        low_v = st.number_input("From (%)", 0.00, 100.00, 0.00, 0.01, format="%.2f")
-        high_v = st.number_input("To (%)", 0.00, 100.00, 75.00, 0.01, format="%.2f")
+        c_l, c_h = st.columns(2)
+        with c_l: low_v = st.number_input("From (%)", 0.00, 100.00, 0.00, 0.01, format="%.2f")
+        with c_h: high_v = st.number_input("To (%)", 0.00, 100.00, 75.00, 0.01, format="%.2f")
         dept_choice = st.selectbox("Select Department", ["All Departments"] + sorted(df['Dept'].unique()))
-        
-        # ADDED: Subject-wise Focus
-        all_subjects = sorted(df[c_map['subject']].unique())
-        sub_focus = st.selectbox("Subject-Wise Report List", ["Show All Subjects"] + all_subjects)
-        
-        exclude_subs = st.multiselect("Exclude Subjects", all_subjects)
+        exclude_subs = st.multiselect("Exclude Subjects", sorted(df[c_map['subject']].unique()))
+        if st.button("Clear Selection Filters"): 
+            st.session_state.sel_section = None
+            st.session_state.sel_subject = None
+            st.rerun()
         if st.button("Logout"): st.session_state.authenticated = False; st.rerun()
 
     if exclude_subs: df = df[~df[c_map['subject']].isin(exclude_subs)]
@@ -165,6 +174,9 @@ if uploaded_file:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         summaries, subject_impact = [], pd.Series(dtype=float)
+        # Store data for dynamic filtering
+        all_section_data = {}
+
         tabs = st.tabs(["📊 COMMAND CENTER"] + [f"💎 {d}" for d in active_depts])
 
         for d_idx, dept in enumerate(active_depts):
@@ -176,57 +188,90 @@ if uploaded_file:
                     s_df = d_df[d_df[c_map['batch']].astype(str).str.contains(series.split()[0]) & d_df[c_map['batch']].astype(str).str.contains(series.split()[-1])]
                     s_subs = sorted([s for s in s_df[c_map['subject']].unique() if is_valid_subject(s)])
                     
-                    # Core Logic: Generate Grid
-                    gen, _ = process_grid(s_df, c_map, s_subs, low_v, high_v, show_all=False)
-                    
-                    if gen is not None:
-                        # FILTER LOGIC FOR SUBJECT-WISE REQUEST
-                        if sub_focus != "Show All Subjects" and sub_focus in gen.columns:
-                            gen = gen[gen[sub_focus] != ""] 
-                        
-                        with st.expander(f"👁️ {series} ({low_v}% - {high_v}%)"): 
-                            st.dataframe(gen, hide_index=True)
-                        
-                        # Excel Export
-                        sn = f"{series} GEN"[:31]
-                        gen.to_excel(writer, sheet_name=sn, index=False)
-                        apply_styles(writer.sheets[sn], high_v)
-                    
                     for sec in sorted(s_df[c_map['batch']].unique()):
                         sec_df = s_df[s_df[c_map['batch']] == sec]
                         grid, counts = process_grid(sec_df, c_map, s_subs, low_v, high_v)
                         if grid is not None:
-                            # Apply subject filter to section data too
-                            if sub_focus != "Show All Subjects" and sub_focus in grid.columns:
-                                grid = grid[grid[sub_focus] != ""]
-                            
-                            summaries.append({'Section': sec, 'Count': len(grid)-1, 'Data': grid})
+                            all_section_data[sec] = {'grid': grid, 'counts': counts, 'series': series}
+                            summaries.append({'Section': sec, 'Count': len(grid)-1, 'Series': series})
                             subject_impact = subject_impact.add(counts, fill_value=0)
 
         with tabs[0]:
             if summaries:
                 sum_df = pd.DataFrame(summaries)
+                
+                # --- Layer 2: Subject Glass Headers (Rows by Batch Year) ---
+                st.markdown("### 📚 Subject Focus (Click to Filter)")
+                batches = sorted(df[c_map['batch']].astype(str).unique())
+                for b_name in batches:
+                    b_subs = sorted(df[df[c_map['batch']] == b_name][c_map['subject']].unique())
+                    st.write(f"**{b_name} Subjects:**")
+                    cols = st.columns(min(len(b_subs), 6))
+                    for i, sub in enumerate(b_subs):
+                        with cols[i % 6]:
+                            if st.button(f"{sub}", key=f"sub_{b_name}_{sub}"):
+                                st.session_state.sel_subject = sub
+                                st.session_state.sel_section = None # Reset section when subject clicked
+                
+                # --- Layer 1: Interactive Section Glass Headers ---
+                st.markdown("### 🏢 Section Overview (Click to Filter)")
                 m_cols = st.columns(min(len(sum_df), 4))
                 for idx, row in sum_df.iterrows():
                     with m_cols[idx % 4]:
-                        # INTERACTIVE GLASS HEADER
-                        st.markdown(f'<div class="glass-metric"><div class="metric-title">{row["Section"]}</div>', unsafe_allow_html=True)
-                        if st.button(f'{row["Count"]}', key=f"btn_{row['Section']}"):
-                            st.session_state.view_section = row['Section']
-                        st.markdown('</div>', unsafe_allow_html=True)
+                        # Wrap glass-metric in a button
+                        if st.button("", key=f"glass_{row['Section']}"):
+                            st.session_state.sel_section = row['Section']
+                            st.session_state.sel_subject = None # Reset subject when section clicked
+                        st.markdown(f'''
+                            <div class="glass-metric" style="margin-top: -85px; pointer-events: none;">
+                                <div class="metric-title">{row["Section"]}</div>
+                                <div class="metric-value">{row["Count"]}</div>
+                            </div>
+                        ''', unsafe_allow_html=True)
+
+                # --- Dynamic Filtering Logic ---
+                filtered_sum_df = sum_df.copy()
+                filtered_impact = subject_impact.copy()
                 
-                # Show data if glass header clicked
-                if st.session_state.view_section:
-                    st.divider()
-                    st.subheader(f"Data for {st.session_state.view_section}")
-                    disp_data = next((item['Data'] for item in summaries if item['Section'] == st.session_state.view_section), None)
-                    if disp_data is not None: st.dataframe(disp_data, hide_index=True)
+                if st.session_state.sel_section:
+                    st.subheader(f"📍 Filtering by Section: {st.session_state.sel_section}")
+                    filtered_sum_df = sum_df[sum_df['Section'] == st.session_state.sel_section]
+                    display_grid = all_section_data[st.session_state.sel_section]['grid']
+                    st.dataframe(display_grid, hide_index=True)
+                    
+                elif st.session_state.sel_subject:
+                    st.subheader(f"📖 Filtering by Subject: {st.session_state.sel_subject}")
+                    # Re-calculating impact and grid for only this subject
+                    sub_list = []
+                    for s_key, s_val in all_section_data.items():
+                        g = s_val['grid']
+                        if st.session_state.sel_subject in g.columns:
+                            sub_only = g[g[st.session_state.sel_subject] != ""]
+                            if not sub_only.empty: sub_list.append(sub_only)
+                    
+                    if sub_list:
+                        final_sub_df = pd.concat(sub_list)
+                        st.dataframe(final_sub_df, hide_index=True)
                 
+                # Charts update dynamically based on filtered data
                 c1, c2 = st.columns(2)
-                with c1: st.plotly_chart(px.bar(sum_df, x='Section', y='Count', color='Section', title="Section Distribution", template="plotly_dark"), use_container_width=True)
-                with c2: 
-                    impact_df = subject_impact.reset_index()
+                with c1: 
+                    st.plotly_chart(px.bar(filtered_sum_df, x='Section', y='Count', color='Section',
+                                     title="Dynamic Section Distribution", template="plotly_dark"), use_container_width=True)
+                with c2:
+                    impact_df = filtered_impact.reset_index()
                     impact_df.columns = ['Subject', 'Students']
-                    st.plotly_chart(px.pie(impact_df[impact_df['Students']>0], names='Subject', values='Students', hole=0.4, title="Subject Impact", template="plotly_dark"), use_container_width=True)
+                    if st.session_state.sel_subject: impact_df = impact_df[impact_df['Subject'] == st.session_state.sel_subject]
+                    st.plotly_chart(px.pie(impact_df[impact_df['Students']>0], names='Subject', values='Students', hole=0.4, 
+                                     title="Dynamic Subject Impact", template="plotly_dark"), use_container_width=True)
+                
+                # Sheet Export Logic
+                sum_df.to_excel(writer, sheet_name='SUMMARY', index=False)
+                for s_key, s_val in all_section_data.items():
+                    sn_sec = str(s_key).replace("/", "-")[:31]
+                    s_val['grid'].to_excel(writer, sheet_name=sn_sec, index=False)
+                    apply_styles(writer.sheets[sn_sec], high_v)
+                    
+            else: st.info("No data in current range.")
 
     st.download_button(f"📥 Download Report", output.getvalue(), "VMS_Report.xlsx", use_container_width=True)
