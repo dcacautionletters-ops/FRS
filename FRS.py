@@ -20,32 +20,44 @@ st.markdown("""
         -webkit-background-clip: text; -webkit-text-fill-color: transparent; 
         font-size: 48px !important; font-weight: 700; text-align: center; margin: 40px 0 10px 0;
     }
-    .glass-metric {
-        background: rgba(255, 255, 255, 0.03); backdrop-filter: blur(15px);
-        border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 15px;
-        padding: 25px; margin: 10px 0; text-align: center;
-        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+    /* Custom style for interactive glass buttons */
+    div.stButton > button {
+        background: rgba(255, 255, 255, 0.05) !important;
+        backdrop-filter: blur(15px);
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        border-radius: 15px !important;
+        padding: 20px !important;
+        color: white !important;
+        width: 100%;
+        transition: 0.3s;
     }
-    .metric-value { font-size: 42px; font-weight: 800; color: #92fe9d; }
-    .metric-title { color: #ffffff; font-size: 14px; font-weight: 600; text-transform: uppercase; }
+    div.stButton > button:hover {
+        background: rgba(255, 255, 255, 0.15) !important;
+        border: 1px solid #92fe9d !important;
+    }
+    .metric-val { font-size: 32px; font-weight: 800; color: #92fe9d; display: block; }
+    .metric-lbl { font-size: 12px; text-transform: uppercase; color: #ffffff; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. AUTHENTICATION ---
+# --- 2. AUTHENTICATION & STATE ---
 if 'authenticated' not in st.session_state: st.session_state.authenticated = False
+if 'selected_section' not in st.session_state: st.session_state.selected_section = None
+
 if not st.session_state.authenticated:
     st.markdown('<p class="welcome-note">VMS Reporting System</p>', unsafe_allow_html=True)
     col1, col2, col3 = st.columns([1, 1.4, 1])
     with col2:
         p = st.text_input("Password", type="password")
-        if st.button("Access Dashboard", use_container_width=True):
-            if p == MASTER_PASSWORD: st.session_state.authenticated = True; st.rerun()
+        if st.button("Access Dashboard"):
+            if p == MASTER_PASSWORD: 
+                st.session_state.authenticated = True
+                st.rerun()
             else: st.error("Access Denied")
     st.stop()
 
 # --- 3. CORE LOGIC ---
-KEYWORDS_TO_IGNORE = ["BADMINTON", "BASKETBALL", "CROSS FITNESS", "SWIMMING", "ZUMBA", "TABLE TENNIS", 
-                      "FREESLOT", "FREE SLOT", "SOFT SKILL", "ATOM", "DSA"]
+KEYWORDS_TO_IGNORE = ["BADMINTON", "BASKETBALL", "CROSS FITNESS", "SWIMMING", "ZUMBA", "TABLE TENNIS", "FREESLOT", "FREE SLOT", "SOFT SKILL", "ATOM", "DSA"]
 ATT_COL_NAME = "Attended Hours with Approved Leave Percentage"
 
 def is_valid_subject(subject_name):
@@ -55,12 +67,9 @@ def is_valid_subject(subject_name):
 def get_bracket_summary(data_df, cols, subjects, threshold):
     summary_data = []
     for sub in subjects:
-        # Rounding to 2 decimal places for 100% accuracy in bracket matching
         sub_vals = pd.to_numeric(data_df[data_df[cols['subject']] == sub][cols['attendance']], errors='coerce').dropna().round(2)
-        
         b1 = len(sub_vals[(sub_vals >= 0) & (sub_vals < 50)])
         b2 = len(sub_vals[(sub_vals >= 50) & (sub_vals < 60)])
-        # SPLIT 60-69.99 into two columns as requested
         b3a = len(sub_vals[(sub_vals >= 60) & (sub_vals < 64.5)])
         b3b = len(sub_vals[(sub_vals >= 64.5) & (sub_vals < 70)])
         b4 = len(sub_vals[(sub_vals >= 70) & (sub_vals < 75)])
@@ -71,10 +80,9 @@ def get_bracket_summary(data_df, cols, subjects, threshold):
         if threshold > 50: row["50.00-59.99"] = b2; total += b2
         if threshold > 60:
             row["60.00-64.49"] = b3a
-            row["64.50-69.99"] = b3b # Set to 69.99 to ensure "nothing is missed"
+            row["64.50-69.99"] = b3b
             total += (b3a + b3b)
         if threshold > 70: row["70.00-74.99"] = b4; total += b4
-            
         row["Total"] = total
         summary_data.append(row)
     return pd.DataFrame(summary_data)
@@ -94,12 +102,6 @@ def apply_styles(ws, threshold, is_summary=False):
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
         for cell in row:
             cell.border, cell.alignment = border, Alignment(horizontal="center")
-            if not is_summary and cell.column > 5:
-                try:
-                    val = float(cell.value)
-                    if val < 70: cell.fill, cell.font = crit_fill, Font(bold=True, color="FFFFFF")
-                    elif 70 <= val < threshold: cell.fill, cell.font = warn_fill, Font(bold=True, color="000000")
-                except: pass
 
 def process_grid(data_df, cols, batch_subjects, low_thresh, high_thresh, show_all=False):
     if data_df.empty: return None, None
@@ -112,36 +114,18 @@ def process_grid(data_df, cols, batch_subjects, low_thresh, high_thresh, show_al
     final_subjects = [s for s in batch_subjects if is_valid_subject(s)]
     for sub in final_subjects:
         if sub not in full_grid.columns: full_grid[sub] = None
-        full_grid[sub] = pd.to_numeric(full_grid[sub], errors='coerce').round(2)
 
-    theory_cols = [c for c in final_subjects if not any(x in str(c).upper() for x in ["LAB", "PRACTICAL", "WORKSHOP"])]
-    full_grid['Theory Avg'] = full_grid[theory_cols].mean(axis=1).round(2)
+    theory_cols = [c for c in final_subjects if c in full_grid.columns and not any(x in str(c).upper() for x in ["LAB", "PRACTICAL", "WORKSHOP"])]
+    full_grid['Theory Avg'] = full_grid[theory_cols].mean(axis=1).round(2) if theory_cols else 0
     full_grid['Final Avg'] = full_grid[final_subjects].mean(axis=1).round(2)
     
-    # Range Mask Logic (Strict Boundary)
     grid_mask = (full_grid[final_subjects] >= low_thresh) & (full_grid[final_subjects] <= high_thresh)
-    
-    if show_all:
-        shortage_grid = full_grid.copy()
-    else:
-        shortage_grid = full_grid[grid_mask.any(axis=1)].copy()
+    shortage_grid = full_grid if show_all else full_grid[grid_mask.any(axis=1)].copy()
     
     if shortage_grid.empty: return None, None
     
-    active_mask = (shortage_grid[final_subjects] >= low_thresh) & (shortage_grid[final_subjects] <= high_thresh)
-    shortage_grid['Subjects in Range'] = active_mask.sum(axis=1)
-    sub_counts = active_mask.sum()
-    
-    if not show_all:
-        for sub in final_subjects:
-            shortage_grid[sub] = shortage_grid[sub].apply(lambda x: x if (pd.notnull(x) and low_thresh <= x <= high_thresh) else "")
-    
     shortage_grid.insert(0, 'Sl No.', range(1, len(shortage_grid) + 1))
-    final_cols = ['Sl No.', cols['roll'], cols['name'], cols['batch'], cols['sem']] + final_subjects + ['Subjects in Range', 'Theory Avg', 'Final Avg']
-    count_row = pd.DataFrame([["", "", "", "", f"Count ({low_thresh}-{high_thresh}%)"] + [sub_counts[s] for s in final_subjects] + ["", "", ""]], columns=final_cols)
-    shortage_grid = pd.concat([shortage_grid, count_row], ignore_index=True)
-    
-    return shortage_grid, sub_counts
+    return shortage_grid, grid_mask.sum()
 
 # --- 4. DASHBOARD INTERFACE ---
 uploaded_file = st.file_uploader("📂 Upload Universal Attendance File", type=["xlsx"])
@@ -167,82 +151,82 @@ if uploaded_file:
     df['Dept'] = df[c_map['batch']].astype(str).apply(lambda x: x.split()[0].upper())
     
     with st.sidebar:
-        st.markdown("### 🛠️ Global Parameters")
-        c_l, c_h = st.columns(2)
-        with c_l: low_v = st.number_input("From (%)", 0.00, 100.00, 0.00, 0.01, format="%.2f")
-        with c_h: high_v = st.number_input("To (%)", 0.00, 100.00, 75.00, 0.01, format="%.2f")
-        dept_choice = st.selectbox("Select Department", ["All Departments"] + sorted(df['Dept'].unique()))
-        exclude_subs = st.multiselect("Exclude Subjects", sorted(df[c_map['subject']].unique()))
+        st.markdown("### 🛠️ Report Controls")
+        low_v = st.number_input("Min %", 0.0, 100.0, 0.0)
+        high_v = st.number_input("Max % (Limit)", 0.0, 100.0, 75.0)
+        dept_choice = st.selectbox("Department", ["All"] + sorted(df['Dept'].unique()))
+        
+        all_subs = sorted(df[c_map['subject']].unique())
+        subject_filter = st.selectbox("Subject-Wise Report (Optional)", ["None"] + all_subs)
+        
+        if st.button("Reset View"): st.session_state.selected_section = None; st.rerun()
         if st.button("Logout"): st.session_state.authenticated = False; st.rerun()
 
-    if exclude_subs: df = df[~df[c_map['subject']].isin(exclude_subs)]
-    active_depts = [dept_choice] if dept_choice != "All Departments" else sorted(df['Dept'].unique())
-
+    active_depts = [dept_choice] if dept_choice != "All" else sorted(df['Dept'].unique())
     output = io.BytesIO()
+
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        summaries, subject_impact = [], pd.Series(dtype=float)
+        summaries = []
+        subject_impact = pd.Series(dtype=float)
+        
         tabs = st.tabs(["📊 COMMAND CENTER"] + [f"💎 {d}" for d in active_depts])
 
+        # Logic per Department
         for d_idx, dept in enumerate(active_depts):
             d_df = df[df['Dept'] == dept]
-            series_list = sorted(list(set(f"{b.split()[0]} {next((p for p in b.split() if p.isdigit()), 'Series')}" for b in d_df[c_map['batch']].astype(str).unique())))
+            batches = sorted(d_df[c_map['batch']].unique())
             
             with tabs[d_idx+1]:
-                for series in series_list:
-                    s_df = d_df[d_df[c_map['batch']].astype(str).str.contains(series.split()[0]) & d_df[c_map['batch']].astype(str).str.contains(series.split()[-1])]
-                    s_subs = sorted([s for s in s_df[c_map['subject']].unique() if is_valid_subject(s)])
+                for batch in batches:
+                    b_df = d_df[d_df[c_map['batch']] == batch]
+                    b_subs = sorted(b_df[c_map['subject']].unique())
                     
-                    # GEN SHEET
-                    gen, _ = process_grid(s_df, c_map, s_subs, low_v, high_v, show_all=False)
-                    if gen is not None:
-                        with st.expander(f"👁️ {series} ({low_v}% - {high_v}%)"): st.dataframe(gen, hide_index=True)
-                        sn = f"{series} GEN"[:31]
-                        gen.to_excel(writer, sheet_name=sn, index=False)
-                        # Appending updated split summary
-                        get_bracket_summary(s_df, c_map, s_subs, high_v).to_excel(writer, sheet_name=sn, startrow=len(gen)+2, index=False)
-                        apply_styles(writer.sheets[sn], high_v)
+                    grid, counts = process_grid(b_df, c_map, b_subs, low_v, high_v)
+                    if grid is not None:
+                        # Apply Subject Filter if selected
+                        display_grid = grid
+                        if subject_filter != "None" and subject_filter in grid.columns:
+                            display_grid = grid[pd.to_numeric(grid[subject_filter], errors='coerce').between(low_v, high_v)]
+                        
+                        with st.expander(f"Section: {batch}"):
+                            st.dataframe(display_grid, hide_index=True)
+                        
+                        summaries.append({'Section': batch, 'Count': len(display_grid), 'Data': display_grid})
+                        subject_impact = subject_impact.add(counts, fill_value=0)
+                        
+                        # Excel Export
+                        sn = str(batch).replace("/", "-")[:31]
+                        display_grid.to_excel(writer, sheet_name=sn, index=False)
 
-                    # GEN ALL
-                    all_g, _ = process_grid(s_df, c_map, s_subs, low_v, high_v, show_all=True)
-                    if all_g is not None:
-                        sn_all = f"{series} GEN ALL"[:31]
-                        all_g.to_excel(writer, sheet_name=sn_all, index=False)
-                        get_bracket_summary(s_df, c_map, s_subs, high_v).to_excel(writer, sheet_name=sn_all, startrow=len(all_g)+2, index=False)
-                        apply_styles(writer.sheets[sn_all], high_v)
-                    
-                    for sec in sorted(s_df[c_map['batch']].unique()):
-                        sec_df = s_df[s_df[c_map['batch']] == sec]
-                        grid, counts = process_grid(sec_df, c_map, s_subs, low_v, high_v)
-                        if grid is not None:
-                            sn_sec = str(sec).replace("/", "-")[:31]
-                            grid.to_excel(writer, sheet_name=sn_sec, index=False)
-                            get_bracket_summary(sec_df, c_map, s_subs, high_v).to_excel(writer, sheet_name=sn_sec, startrow=len(grid)+2, index=False)
-                            apply_styles(writer.sheets[sn_sec], high_v)
-                            summaries.append({'Section': sec, 'Count': len(grid)-1})
-                            subject_impact = subject_impact.add(counts, fill_value=0)
-
+        # Command Center Dashboard
         with tabs[0]:
             if summaries:
                 sum_df = pd.DataFrame(summaries)
-                m_cols = st.columns(min(len(sum_df), 4))
+                st.markdown("### Interactive Section Overview")
+                m_cols = st.columns(4)
                 for idx, row in sum_df.iterrows():
                     with m_cols[idx % 4]:
-                        st.markdown(f'<div class="glass-metric"><div class="metric-title">{row["Section"]}</div><div class="metric-value">{row["Count"]}</div></div>', unsafe_allow_html=True)
-                
-                c1, c2 = st.columns(2)
-                with c1: 
-                    st.plotly_chart(px.bar(sum_df, x='Section', y='Count', color='Section',
-                                     title="Colorful Section Distribution", color_discrete_sequence=px.colors.qualitative.Pastel,
-                                     template="plotly_dark"), use_container_width=True)
-                with c2:
-                    if not subject_impact.empty and subject_impact.sum() > 0:
-                        impact_df = subject_impact.reset_index()
-                        impact_df.columns = ['Subject', 'Students']
-                        impact_df = impact_df[impact_df['Students'] > 0]
-                        st.plotly_chart(px.pie(impact_df, names='Subject', values='Students', hole=0.4, 
-                                         title=f"Colorful Subject Impact", color_discrete_sequence=px.colors.qualitative.Set3,
-                                         template="plotly_dark"), use_container_width=True)
-                sum_df.to_excel(writer, sheet_name='SUMMARY', index=False)
-            else: st.info("No data in current range.")
+                        # INTERACTIVE GLASS HEADER
+                        if st.button(f"{row['Section']}", key=f"btn_{idx}"):
+                            st.session_state.selected_section = row['Section']
+                        st.markdown(f'<div style="text-align:center; margin-top:-45px; pointer-events:none;"><span class="metric-val">{row["Count"]}</span><span class="metric-lbl">Shortages</span></div>', unsafe_allow_html=True)
 
-    st.download_button(f"📥 Download Report", output.getvalue(), "VMS_Report.xlsx", use_container_width=True)
+                # Drill-down display
+                if st.session_state.selected_section:
+                    st.divider()
+                    st.subheader(f"Detailed View: {st.session_state.selected_section}")
+                    selected_data = next(item['Data'] for item in summaries if item['Section'] == st.session_state.selected_section)
+                    st.dataframe(selected_data, use_container_width=True)
+
+                # Charts
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.plotly_chart(px.bar(sum_df, x='Section', y='Count', title="Shortage by Section", template="plotly_dark"), use_container_width=True)
+                with c2:
+                    impact_df = subject_impact.reset_index()
+                    impact_df.columns = ['Subject', 'Count']
+                    st.plotly_chart(px.pie(impact_df[impact_df['Count']>0], names='Subject', values='Count', hole=0.4, title="Subject Impact", template="plotly_dark"), use_container_width=True)
+            else:
+                st.info("No shortages found in the selected range.")
+
+    st.download_button("📥 Download Comprehensive Excel Report", output.getvalue(), "VMS_Shortage_Report.xlsx", use_container_width=True)
