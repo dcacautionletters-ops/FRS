@@ -20,44 +20,43 @@ st.markdown("""
         -webkit-background-clip: text; -webkit-text-fill-color: transparent; 
         font-size: 48px !important; font-weight: 700; text-align: center; margin: 40px 0 10px 0;
     }
-    /* Custom style for interactive glass buttons */
-    div.stButton > button {
-        background: rgba(255, 255, 255, 0.05) !important;
-        backdrop-filter: blur(15px);
-        border: 1px solid rgba(255, 255, 255, 0.1) !important;
-        border-radius: 15px !important;
-        padding: 20px !important;
-        color: white !important;
-        width: 100%;
-        transition: 0.3s;
+    .glass-metric {
+        background: rgba(255, 255, 255, 0.03); backdrop-filter: blur(15px);
+        border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 15px;
+        padding: 25px; margin: 10px 0; text-align: center;
+        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
     }
-    div.stButton > button:hover {
-        background: rgba(255, 255, 255, 0.15) !important;
-        border: 1px solid #92fe9d !important;
+    .metric-value { font-size: 42px; font-weight: 800; color: #92fe9d; }
+    .metric-title { color: #ffffff; font-size: 14px; font-weight: 600; text-transform: uppercase; }
+    
+    /* Transparent button to make glass headers interactive */
+    .stButton>button {
+        background-color: transparent !important;
+        border: none !important;
+        color: inherit !important;
+        padding: 0 !important;
+        width: 100% !important;
     }
-    .metric-val { font-size: 32px; font-weight: 800; color: #92fe9d; display: block; }
-    .metric-lbl { font-size: 12px; text-transform: uppercase; color: #ffffff; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. AUTHENTICATION & STATE ---
+# --- 2. AUTHENTICATION ---
 if 'authenticated' not in st.session_state: st.session_state.authenticated = False
-if 'selected_section' not in st.session_state: st.session_state.selected_section = None
+if 'view_section' not in st.session_state: st.session_state.view_section = None
 
 if not st.session_state.authenticated:
     st.markdown('<p class="welcome-note">VMS Reporting System</p>', unsafe_allow_html=True)
     col1, col2, col3 = st.columns([1, 1.4, 1])
     with col2:
         p = st.text_input("Password", type="password")
-        if st.button("Access Dashboard"):
-            if p == MASTER_PASSWORD: 
-                st.session_state.authenticated = True
-                st.rerun()
+        if st.button("Access Dashboard", use_container_width=True):
+            if p == MASTER_PASSWORD: st.session_state.authenticated = True; st.rerun()
             else: st.error("Access Denied")
     st.stop()
 
-# --- 3. CORE LOGIC ---
-KEYWORDS_TO_IGNORE = ["BADMINTON", "BASKETBALL", "CROSS FITNESS", "SWIMMING", "ZUMBA", "TABLE TENNIS", "FREESLOT", "FREE SLOT", "SOFT SKILL", "ATOM", "DSA"]
+# --- 3. CORE LOGIC (UNTOUCHED) ---
+KEYWORDS_TO_IGNORE = ["BADMINTON", "BASKETBALL", "CROSS FITNESS", "SWIMMING", "ZUMBA", "TABLE TENNIS", 
+                      "FREESLOT", "FREE SLOT", "SOFT SKILL", "ATOM", "DSA"]
 ATT_COL_NAME = "Attended Hours with Approved Leave Percentage"
 
 def is_valid_subject(subject_name):
@@ -73,14 +72,13 @@ def get_bracket_summary(data_df, cols, subjects, threshold):
         b3a = len(sub_vals[(sub_vals >= 60) & (sub_vals < 64.5)])
         b3b = len(sub_vals[(sub_vals >= 64.5) & (sub_vals < 70)])
         b4 = len(sub_vals[(sub_vals >= 70) & (sub_vals < 75)])
-        
         row = {"Subject": sub}
         total = 0
         if threshold > 0: row["0.00-49.99"] = b1; total += b1
         if threshold > 50: row["50.00-59.99"] = b2; total += b2
         if threshold > 60:
             row["60.00-64.49"] = b3a
-            row["64.50-69.99"] = b3b
+            row["64.50-69.99"] = b3b 
             total += (b3a + b3b)
         if threshold > 70: row["70.00-74.99"] = b4; total += b4
         row["Total"] = total
@@ -93,12 +91,10 @@ def apply_styles(ws, threshold, is_summary=False):
     h_fill = PatternFill(start_color="2C3E50", end_color="2C3E50", fill_type="solid")
     crit_fill = PatternFill(start_color="C0392B", end_color="C0392B", fill_type="solid") 
     warn_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid") 
-    
     for col in range(1, ws.max_column + 1):
         cell = ws.cell(row=1, column=col)
         cell.font, cell.fill, cell.border = Font(bold=True, color="FFFFFF"), h_fill, border
         ws.column_dimensions[cell.column_letter].width = 20
-
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
         for cell in row:
             cell.border, cell.alignment = border, Alignment(horizontal="center")
@@ -107,25 +103,26 @@ def process_grid(data_df, cols, batch_subjects, low_thresh, high_thresh, show_al
     if data_df.empty: return None, None
     data_df = data_df.copy()
     data_df[cols['attendance']] = pd.to_numeric(data_df[cols['attendance']], errors='coerce').round(2)
-    
     full_grid = data_df.pivot_table(index=[cols['roll'], cols['name'], cols['batch'], cols['sem']],
                                     columns=cols['subject'], values=cols['attendance'], sort=False).reset_index()
-    
     final_subjects = [s for s in batch_subjects if is_valid_subject(s)]
     for sub in final_subjects:
         if sub not in full_grid.columns: full_grid[sub] = None
-
-    theory_cols = [c for c in final_subjects if c in full_grid.columns and not any(x in str(c).upper() for x in ["LAB", "PRACTICAL", "WORKSHOP"])]
-    full_grid['Theory Avg'] = full_grid[theory_cols].mean(axis=1).round(2) if theory_cols else 0
+        full_grid[sub] = pd.to_numeric(full_grid[sub], errors='coerce').round(2)
+    theory_cols = [c for c in final_subjects if not any(x in str(c).upper() for x in ["LAB", "PRACTICAL", "WORKSHOP"])]
+    full_grid['Theory Avg'] = full_grid[theory_cols].mean(axis=1).round(2)
     full_grid['Final Avg'] = full_grid[final_subjects].mean(axis=1).round(2)
-    
     grid_mask = (full_grid[final_subjects] >= low_thresh) & (full_grid[final_subjects] <= high_thresh)
     shortage_grid = full_grid if show_all else full_grid[grid_mask.any(axis=1)].copy()
-    
     if shortage_grid.empty: return None, None
-    
+    active_mask = (shortage_grid[final_subjects] >= low_thresh) & (shortage_grid[final_subjects] <= high_thresh)
+    shortage_grid['Subjects in Range'] = active_mask.sum(axis=1)
+    sub_counts = active_mask.sum()
+    if not show_all:
+        for sub in final_subjects:
+            shortage_grid[sub] = shortage_grid[sub].apply(lambda x: x if (pd.notnull(x) and low_thresh <= x <= high_thresh) else "")
     shortage_grid.insert(0, 'Sl No.', range(1, len(shortage_grid) + 1))
-    return shortage_grid, grid_mask.sum()
+    return shortage_grid, sub_counts
 
 # --- 4. DASHBOARD INTERFACE ---
 uploaded_file = st.file_uploader("📂 Upload Universal Attendance File", type=["xlsx"])
@@ -136,7 +133,6 @@ if uploaded_file:
     for i, row in df_raw.iterrows():
         if any("ROLL NO" in str(x).upper() for x in row.values):
             h_row = i; break
-    
     df = pd.read_excel(uploaded_file, header=h_row)
     c_map = {'sem': df.columns[5]} 
     for c in df.columns:
@@ -151,82 +147,86 @@ if uploaded_file:
     df['Dept'] = df[c_map['batch']].astype(str).apply(lambda x: x.split()[0].upper())
     
     with st.sidebar:
-        st.markdown("### 🛠️ Report Controls")
-        low_v = st.number_input("Min %", 0.0, 100.0, 0.0)
-        high_v = st.number_input("Max % (Limit)", 0.0, 100.0, 75.0)
-        dept_choice = st.selectbox("Department", ["All"] + sorted(df['Dept'].unique()))
+        st.markdown("### 🛠️ Global Parameters")
+        low_v = st.number_input("From (%)", 0.00, 100.00, 0.00, 0.01, format="%.2f")
+        high_v = st.number_input("To (%)", 0.00, 100.00, 75.00, 0.01, format="%.2f")
+        dept_choice = st.selectbox("Select Department", ["All Departments"] + sorted(df['Dept'].unique()))
         
-        all_subs = sorted(df[c_map['subject']].unique())
-        subject_filter = st.selectbox("Subject-Wise Report (Optional)", ["None"] + all_subs)
+        # ADDED: Subject-wise Focus
+        all_subjects = sorted(df[c_map['subject']].unique())
+        sub_focus = st.selectbox("Subject-Wise Report List", ["Show All Subjects"] + all_subjects)
         
-        if st.button("Reset View"): st.session_state.selected_section = None; st.rerun()
+        exclude_subs = st.multiselect("Exclude Subjects", all_subjects)
         if st.button("Logout"): st.session_state.authenticated = False; st.rerun()
 
-    active_depts = [dept_choice] if dept_choice != "All" else sorted(df['Dept'].unique())
-    output = io.BytesIO()
+    if exclude_subs: df = df[~df[c_map['subject']].isin(exclude_subs)]
+    active_depts = [dept_choice] if dept_choice != "All Departments" else sorted(df['Dept'].unique())
 
+    output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        summaries = []
-        subject_impact = pd.Series(dtype=float)
-        
+        summaries, subject_impact = [], pd.Series(dtype=float)
         tabs = st.tabs(["📊 COMMAND CENTER"] + [f"💎 {d}" for d in active_depts])
 
-        # Logic per Department
         for d_idx, dept in enumerate(active_depts):
             d_df = df[df['Dept'] == dept]
-            batches = sorted(d_df[c_map['batch']].unique())
+            series_list = sorted(list(set(f"{b.split()[0]} {next((p for p in b.split() if p.isdigit()), 'Series')}" for b in d_df[c_map['batch']].astype(str).unique())))
             
             with tabs[d_idx+1]:
-                for batch in batches:
-                    b_df = d_df[d_df[c_map['batch']] == batch]
-                    b_subs = sorted(b_df[c_map['subject']].unique())
+                for series in series_list:
+                    s_df = d_df[d_df[c_map['batch']].astype(str).str.contains(series.split()[0]) & d_df[c_map['batch']].astype(str).str.contains(series.split()[-1])]
+                    s_subs = sorted([s for s in s_df[c_map['subject']].unique() if is_valid_subject(s)])
                     
-                    grid, counts = process_grid(b_df, c_map, b_subs, low_v, high_v)
-                    if grid is not None:
-                        # Apply Subject Filter if selected
-                        display_grid = grid
-                        if subject_filter != "None" and subject_filter in grid.columns:
-                            display_grid = grid[pd.to_numeric(grid[subject_filter], errors='coerce').between(low_v, high_v)]
+                    # Core Logic: Generate Grid
+                    gen, _ = process_grid(s_df, c_map, s_subs, low_v, high_v, show_all=False)
+                    
+                    if gen is not None:
+                        # FILTER LOGIC FOR SUBJECT-WISE REQUEST
+                        if sub_focus != "Show All Subjects" and sub_focus in gen.columns:
+                            gen = gen[gen[sub_focus] != ""] 
                         
-                        with st.expander(f"Section: {batch}"):
-                            st.dataframe(display_grid, hide_index=True)
-                        
-                        summaries.append({'Section': batch, 'Count': len(display_grid), 'Data': display_grid})
-                        subject_impact = subject_impact.add(counts, fill_value=0)
+                        with st.expander(f"👁️ {series} ({low_v}% - {high_v}%)"): 
+                            st.dataframe(gen, hide_index=True)
                         
                         # Excel Export
-                        sn = str(batch).replace("/", "-")[:31]
-                        display_grid.to_excel(writer, sheet_name=sn, index=False)
+                        sn = f"{series} GEN"[:31]
+                        gen.to_excel(writer, sheet_name=sn, index=False)
+                        apply_styles(writer.sheets[sn], high_v)
+                    
+                    for sec in sorted(s_df[c_map['batch']].unique()):
+                        sec_df = s_df[s_df[c_map['batch']] == sec]
+                        grid, counts = process_grid(sec_df, c_map, s_subs, low_v, high_v)
+                        if grid is not None:
+                            # Apply subject filter to section data too
+                            if sub_focus != "Show All Subjects" and sub_focus in grid.columns:
+                                grid = grid[grid[sub_focus] != ""]
+                            
+                            summaries.append({'Section': sec, 'Count': len(grid)-1, 'Data': grid})
+                            subject_impact = subject_impact.add(counts, fill_value=0)
 
-        # Command Center Dashboard
         with tabs[0]:
             if summaries:
                 sum_df = pd.DataFrame(summaries)
-                st.markdown("### Interactive Section Overview")
-                m_cols = st.columns(4)
+                m_cols = st.columns(min(len(sum_df), 4))
                 for idx, row in sum_df.iterrows():
                     with m_cols[idx % 4]:
                         # INTERACTIVE GLASS HEADER
-                        if st.button(f"{row['Section']}", key=f"btn_{idx}"):
-                            st.session_state.selected_section = row['Section']
-                        st.markdown(f'<div style="text-align:center; margin-top:-45px; pointer-events:none;"><span class="metric-val">{row["Count"]}</span><span class="metric-lbl">Shortages</span></div>', unsafe_allow_html=True)
-
-                # Drill-down display
-                if st.session_state.selected_section:
+                        st.markdown(f'<div class="glass-metric"><div class="metric-title">{row["Section"]}</div>', unsafe_allow_html=True)
+                        if st.button(f'{row["Count"]}', key=f"btn_{row['Section']}"):
+                            st.session_state.view_section = row['Section']
+                        st.markdown('</div>', unsafe_allow_html=True)
+                
+                # Show data if glass header clicked
+                if st.session_state.view_section:
                     st.divider()
-                    st.subheader(f"Detailed View: {st.session_state.selected_section}")
-                    selected_data = next(item['Data'] for item in summaries if item['Section'] == st.session_state.selected_section)
-                    st.dataframe(selected_data, use_container_width=True)
-
-                # Charts
+                    st.subheader(f"Data for {st.session_state.view_section}")
+                    disp_data = next((item['Data'] for item in summaries if item['Section'] == st.session_state.view_section), None)
+                    if disp_data is not None: st.dataframe(disp_data, hide_index=True)
+                
                 c1, c2 = st.columns(2)
-                with c1:
-                    st.plotly_chart(px.bar(sum_df, x='Section', y='Count', title="Shortage by Section", template="plotly_dark"), use_container_width=True)
-                with c2:
+                with c1: st.plotly_chart(px.bar(sum_df, x='Section', y='Count', color='Section', title="Section Distribution", template="plotly_dark"), use_container_width=True)
+                with c2: 
                     impact_df = subject_impact.reset_index()
-                    impact_df.columns = ['Subject', 'Count']
-                    st.plotly_chart(px.pie(impact_df[impact_df['Count']>0], names='Subject', values='Count', hole=0.4, title="Subject Impact", template="plotly_dark"), use_container_width=True)
-            else:
-                st.info("No shortages found in the selected range.")
+                    impact_df.columns = ['Subject', 'Students']
+                    st.plotly_chart(px.pie(impact_df[impact_df['Students']>0], names='Subject', values='Students', hole=0.4, title="Subject Impact", template="plotly_dark"), use_container_width=True)
 
-    st.download_button("📥 Download Comprehensive Excel Report", output.getvalue(), "VMS_Shortage_Report.xlsx", use_container_width=True)
+    st.download_button(f"📥 Download Report", output.getvalue(), "VMS_Report.xlsx", use_container_width=True)
