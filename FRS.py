@@ -25,10 +25,12 @@ st.markdown("""
         border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 15px;
         padding: 25px; margin: 10px 0; text-align: center;
         box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        position: relative;
     }
     .metric-value { font-size: 42px; font-weight: 800; color: #92fe9d; }
     .metric-title { color: #ffffff; font-size: 14px; font-weight: 600; text-transform: uppercase; }
     
+    /* Interactive Overlay Logic */
     .stButton>button {
         background-color: transparent !important;
         border: none !important;
@@ -129,7 +131,7 @@ if uploaded_file:
         low_v = st.number_input("From (%)", 0.00, 100.00, 0.00, 0.01, format="%.2f")
         high_v = st.number_input("To (%)", 0.00, 100.00, 75.00, 0.01, format="%.2f")
         dept_choice = st.selectbox("Select Department", ["All Departments"] + sorted(df['Dept'].unique()))
-        if st.button("Reset Selection"):
+        if st.button("Reset All Filters"):
             st.session_state.active_sec = None
             st.session_state.active_sub = None
             st.rerun()
@@ -138,8 +140,8 @@ if uploaded_file:
     output = io.BytesIO()
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # CRITICAL FIX: Always create at least one sheet to prevent IndexError
-        pd.DataFrame([["No data matches the selected filters"]]).to_excel(writer, sheet_name='SUMMARY', index=False, header=False)
+        # Prevent IndexError: Ensure at least one sheet exists
+        pd.DataFrame([["VMS Reporting Generated"]]).to_excel(writer, sheet_name='SUMMARY', index=False, header=False)
         
         summaries, subject_impact = [], pd.Series(dtype=float)
         full_data_store = {}
@@ -158,48 +160,57 @@ if uploaded_file:
                         full_data_store[sec] = {'grid': grid, 'counts': counts}
                         summaries.append({'Section': sec, 'Count': len(grid)-1})
                         subject_impact = subject_impact.add(counts, fill_value=0)
-                        # Save to excel
                         sn = str(sec).replace("/", "-")[:31]
                         grid.to_excel(writer, sheet_name=sn, index=False)
                         apply_styles(writer.sheets[sn])
 
         with tabs[0]:
             if summaries:
-                # Update the SUMMARY sheet with real data if it exists
                 sum_df = pd.DataFrame(summaries)
                 sum_df.to_excel(writer, sheet_name='SUMMARY', index=False)
                 
+                # LAYER 2: SUBJECT FOCUS ROWS
                 st.markdown("### 📚 Subject Focus")
                 for year in ["2024", "2025"]:
                     year_subs = sorted(df[df[c_map['batch']].astype(str).str.contains(year)][c_map['subject']].unique())
                     if year_subs:
                         st.write(f"**MCA {year} Subjects:**")
-                        s_cols = st.columns(len(year_subs))
+                        s_cols = st.columns(min(len(year_subs), 6))
                         for i, s_name in enumerate(year_subs):
-                            with s_cols[i]:
-                                if st.button(s_name, key=f"btn_{year}_{s_name}"):
+                            with s_cols[i % 6]:
+                                if st.button(s_name, key=f"subbtn_{year}_{s_name}"):
                                     st.session_state.active_sub = s_name
                                     st.session_state.active_sec = None
                 
+                # LAYER 1: GLASS HEADERS
                 st.markdown("### 🏢 Section Overview")
                 m_cols = st.columns(min(len(sum_df), 4))
                 for idx, row in sum_df.iterrows():
                     with m_cols[idx % 4]:
-                        if st.button("", key=f"click_{row['Section']}"):
+                        if st.button("", key=f"gls_{row['Section']}"):
                             st.session_state.active_sec = row['Section']
                             st.session_state.active_sub = None
                         st.markdown(f'<div class="glass-metric"><div class="metric-title">{row["Section"]}</div><div class="metric-value">{row["Count"]}</div></div>', unsafe_allow_html=True)
                 
-                # Dynamic View
+                # DYNAMIC RESULTS VIEW
                 if st.session_state.active_sec:
+                    st.divider()
+                    st.subheader(f"📍 Section Report: {st.session_state.active_sec}")
                     st.dataframe(full_data_store[st.session_state.active_sec]['grid'], hide_index=True)
                 elif st.session_state.active_sub:
+                    st.divider()
+                    st.subheader(f"📖 Subject Shortage: {st.session_state.active_sub}")
                     sub_list = [d['grid'][d['grid'][st.session_state.active_sub] != ""] for d in full_data_store.values() if st.session_state.active_sub in d['grid'].columns]
                     if sub_list: st.dataframe(pd.concat(sub_list), hide_index=True)
 
-                # Charts
+                # DYNAMIC CHARTS
                 c1, c2 = st.columns(2)
-                with c1: st.plotly_chart(px.bar(sum_df, x='Section', y='Count', template="plotly_dark"), use_container_width=True)
-                with c2: st.plotly_chart(px.pie(subject_impact[subject_impact > 0].reset_index(), names='index', values=0, hole=0.4, template="plotly_dark"), use_container_width=True)
+                with c1:
+                    st.plotly_chart(px.bar(sum_df, x='Section', y='Count', title="Section Distribution", color='Section', template="plotly_dark"), use_container_width=True)
+                with c2:
+                    impact_plot_df = subject_impact[subject_impact > 0].reset_index()
+                    if not impact_plot_df.empty:
+                        impact_plot_df.columns = ['Subject', 'Students']
+                        st.plotly_chart(px.pie(impact_plot_df, names='Subject', values='Students', hole=0.4, title="Subject Impact", template="plotly_dark"), use_container_width=True)
 
-    st.download_button(f"📥 Download Report", output.getvalue(), "VMS_Report.xlsx", use_container_width=True)
+    st.download_button(f"📥 Download Full Report", output.getvalue(), "VMS_Report.xlsx", use_container_width=True)
