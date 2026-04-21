@@ -27,8 +27,8 @@ if not st.session_state.authenticated:
     st.stop()
 
 # --- 3. STYLING HELPER ---
-def apply_nice_formatting(ws):
-    """Applies professional borders, alignment, and auto-column width."""
+def apply_nice_formatting(ws, name_col_index=None):
+    """Applies professional borders, auto-column width, and specific alignments."""
     thin = Side(style='thin', color="000000")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
     header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
@@ -36,27 +36,28 @@ def apply_nice_formatting(ws):
     
     # Format Headers
     for cell in ws[1]:
-        cell.fill = header_fill
-        cell.font = header_font
+        cell.fill, cell.font, cell.border = header_fill, header_font, border
         cell.alignment = Alignment(horizontal="center", vertical="center")
-        cell.border = border
 
     # Format Data Rows & Auto-Fit Columns
-    for column_cells in ws.columns:
+    for col_idx, column_cells in enumerate(ws.columns, start=1):
         max_length = 0
-        column_letter = get_column_letter(column_cells[0].column)
+        column_letter = get_column_letter(col_idx)
         
         for cell in column_cells:
             cell.border = border
-            cell.alignment = Alignment(horizontal="center")
+            # Rule 3: Left align names, center everything else
+            if col_idx == name_col_index and cell.row > 1:
+                cell.alignment = Alignment(horizontal="left", vertical="center")
+            else:
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+            
             try:
                 if len(str(cell.value)) > max_length:
                     max_length = len(str(cell.value))
             except: pass
         
-        # Drag the column width (with a little extra padding)
-        adjusted_width = (max_length + 4)
-        ws.column_dimensions[column_letter].width = adjusted_width
+        ws.column_dimensions[column_letter].width = max_length + 4
 
 # --- 4. CORE LOGIC ---
 KEYWORDS_TO_IGNORE = ["BADMINTON", "BASKETBALL", "CROSS FITNESS", "SWIMMING", "ZUMBA", "TABLE TENNIS", "FREESLOT", "FREE SLOT", "SOFT SKILL", "ATOM", "DSA"]
@@ -87,6 +88,9 @@ if uploaded_file:
         elif ATT_COL_NAME in cs: c_map['attendance'] = c
 
     df = df[df[c_map['subject']].apply(is_valid_subject)]
+    # Rule 2: Rename column to Attendance %
+    df = df.rename(columns={c_map['attendance']: "Attendance %"})
+    c_map['attendance'] = "Attendance %"
     df[c_map['attendance']] = pd.to_numeric(df[c_map['attendance']], errors='coerce').fillna(0)
     
     with st.sidebar:
@@ -94,54 +98,51 @@ if uploaded_file:
         low_v = st.number_input("Min %", 0.0, 100.0, 0.0)
         high_v = st.number_input("Max %", 0.0, 100.0, 75.0)
 
-    # Split by Year/Batch (Universal Logic)
     df['YearBatch'] = df[c_map['batch']].astype(str).apply(lambda x: " ".join(x.split()[:2]))
     batches = sorted(df['YearBatch'].unique())
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        
         for batch_name in batches:
             batch_df = df[df['YearBatch'] == batch_name]
             subjects = sorted(batch_df[c_map['subject']].unique())
             pivot_rows = []
 
-            # 1. Generate Individual Student List Sheets First
             for i, sub in enumerate(subjects, 1):
                 sub_data = batch_df[(batch_df[c_map['subject']] == sub) & 
                                     (batch_df[c_map['attendance']] >= low_v) & 
-                                    (batch_df[c_map['attendance']] <= high_v)]
+                                    (batch_df[c_map['attendance']] <= high_v)].copy()
                 
                 count = len(sub_data)
                 safe_sub_name = "".join(x for x in str(sub) if x.isalnum())[:25]
                 sheet_name = f"{batch_name[:5]}_{safe_sub_name}" 
-                
                 pivot_rows.append({"Sl No.": i, "Subject": sub, "Total Students": count, "Target": sheet_name})
                 
                 if not sub_data.empty:
-                    sub_data[[c_map['roll'], c_map['name'], c_map['batch'], c_map['attendance']]].to_excel(writer, sheet_name=sheet_name, index=False)
-                    apply_nice_formatting(writer.sheets[sheet_name])
+                    # Rule 1: Add Sl No. to the student list report
+                    sub_data.insert(0, "Sl No.", range(1, len(sub_data) + 1))
+                    cols_to_export = ["Sl No.", c_map['roll'], c_map['name'], c_map['batch'], c_map['attendance']]
+                    sub_data[cols_to_export].to_excel(writer, sheet_name=sheet_name, index=False)
+                    # Student Name is the 3rd column (index 3) in the exported list
+                    apply_nice_formatting(writer.sheets[sheet_name], name_col_index=3)
 
-            # 2. Create the Nice Pivot Summary Sheet for the Batch
             summary_name = f"{batch_name} Summary"
             pdf = pd.DataFrame(pivot_rows)
             pdf[["Sl No.", "Subject", "Total Students"]].to_excel(writer, sheet_name=summary_name, index=False)
-            
-            ws_sum = writer.sheets[summary_name]
-            apply_nice_formatting(ws_sum)
+            apply_nice_formatting(writer.sheets[summary_name])
 
-            # 3. Add Hyperlinks to the Pivot Table
+            # Add Hyperlinks
+            ws_sum = writer.sheets[summary_name]
             for idx, row in enumerate(pivot_rows, start=2):
                 if row['Total Students'] > 0:
                     cell = ws_sum.cell(row=idx, column=3)
                     cell.hyperlink = f"#'{row['Target']}'!A1"
                     cell.font = Font(color="0000FF", underline="single", bold=True)
 
-    st.success(f"Report for {', '.join(batches)} generated successfully!")
-    st.download_button(f"📥 Download Formatted Report", output.getvalue(), "VMS_Formatted_Report.xlsx", use_container_width=True)
+    st.success(f"Formatted Reports for {batches} ready!")
+    st.download_button(f"📥 Download VMS Report", output.getvalue(), "VMS_Report_V3.xlsx", use_container_width=True)
 
-    # --- UI DASHBOARD ---
+    # UI PREVIEW
     st.divider()
-    curr_batch = st.selectbox("View Preview For:", batches)
-    preview_df = df[(df['YearBatch'] == curr_batch) & (df[c_map['attendance']] <= high_v)]
-    st.dataframe(preview_df[[c_map['roll'], c_map['name'], c_map['subject'], c_map['attendance']]], use_container_width=True, hide_index=True)
+    curr_batch = st.selectbox("Batch Preview:", batches)
+    st.dataframe(df[df['YearBatch'] == curr_batch][[c_map['roll'], c_map['name'], c_map['attendance']]], use_container_width=True, hide_index=True)
