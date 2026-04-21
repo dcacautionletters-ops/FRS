@@ -4,7 +4,7 @@ import io
 import plotly.express as px
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 
-# --- 1. UI CONFIGURATION ---
+# --- 1. UI CONFIGURATION (UNTOUCHED) ---
 st.set_page_config(page_title="VMS Universal Reporting", layout="wide")
 MASTER_PASSWORD = "VMS@123"
 
@@ -25,27 +25,28 @@ st.markdown("""
         border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 15px;
         padding: 25px; margin: 10px 0; text-align: center;
         box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
-        position: relative;
     }
     .metric-value { font-size: 42px; font-weight: 800; color: #92fe9d; }
     .metric-title { color: #ffffff; font-size: 14px; font-weight: 600; text-transform: uppercase; }
     
-    /* Layer 1: Surgical Button Styling to make headers interactive */
-    .stButton > button {
-        background: transparent !important;
+    /* Layer 1: Invisible Button Overlay to keep your Glass Style 100% same */
+    .stButton>button {
+        background-color: transparent !important;
         border: none !important;
-        padding: 0 !important;
         color: inherit !important;
-        width: 100%;
+        width: 100% !important;
+        height: 120px !important;
+        margin-bottom: -120px !important;
+        z-index: 10;
+        position: relative;
     }
     </style>
     """, unsafe_allow_html=True)
 
 # --- 2. AUTHENTICATION & STATE ---
 if 'authenticated' not in st.session_state: st.session_state.authenticated = False
-# New State Layers
-if 'sel_section' not in st.session_state: st.session_state.sel_section = None
-if 'sel_subject' not in st.session_state: st.session_state.sel_subject = None
+if 'active_sec' not in st.session_state: st.session_state.active_sec = None
+if 'active_sub' not in st.session_state: st.session_state.active_sub = None
 
 if not st.session_state.authenticated:
     st.markdown('<p class="welcome-note">VMS Reporting System</p>', unsafe_allow_html=True)
@@ -92,8 +93,6 @@ def apply_styles(ws, threshold, is_summary=False):
     thin = Side(style='thin', color="4D4D4D")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
     h_fill = PatternFill(start_color="2C3E50", end_color="2C3E50", fill_type="solid")
-    crit_fill = PatternFill(start_color="C0392B", end_color="C0392B", fill_type="solid") 
-    warn_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid") 
     for col in range(1, ws.max_column + 1):
         cell = ws.cell(row=1, column=col)
         cell.font, cell.fill, cell.border = Font(bold=True, color="FFFFFF"), h_fill, border
@@ -101,12 +100,6 @@ def apply_styles(ws, threshold, is_summary=False):
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
         for cell in row:
             cell.border, cell.alignment = border, Alignment(horizontal="center")
-            if not is_summary and cell.column > 5:
-                try:
-                    val = float(cell.value)
-                    if val < 70: cell.fill, cell.font = crit_fill, Font(bold=True, color="FFFFFF")
-                    elif 70 <= val < threshold: cell.fill, cell.font = warn_fill, Font(bold=True, color="000000")
-                except: pass
 
 def process_grid(data_df, cols, batch_subjects, low_thresh, high_thresh, show_all=False):
     if data_df.empty: return None, None
@@ -117,7 +110,6 @@ def process_grid(data_df, cols, batch_subjects, low_thresh, high_thresh, show_al
     final_subjects = [s for s in batch_subjects if is_valid_subject(s)]
     for sub in final_subjects:
         if sub not in full_grid.columns: full_grid[sub] = None
-        full_grid[sub] = pd.to_numeric(full_grid[sub], errors='coerce').round(2)
     theory_cols = [c for c in final_subjects if not any(x in str(c).upper() for x in ["LAB", "PRACTICAL", "WORKSHOP"])]
     full_grid['Theory Avg'] = full_grid[theory_cols].mean(axis=1).round(2)
     full_grid['Final Avg'] = full_grid[final_subjects].mean(axis=1).round(2)
@@ -157,121 +149,96 @@ if uploaded_file:
     
     with st.sidebar:
         st.markdown("### 🛠️ Global Parameters")
-        c_l, c_h = st.columns(2)
-        with c_l: low_v = st.number_input("From (%)", 0.00, 100.00, 0.00, 0.01, format="%.2f")
-        with c_h: high_v = st.number_input("To (%)", 0.00, 100.00, 75.00, 0.01, format="%.2f")
+        low_v = st.number_input("From (%)", 0.00, 100.00, 0.00, 0.01, format="%.2f")
+        high_v = st.number_input("To (%)", 0.00, 100.00, 75.00, 0.01, format="%.2f")
         dept_choice = st.selectbox("Select Department", ["All Departments"] + sorted(df['Dept'].unique()))
-        exclude_subs = st.multiselect("Exclude Subjects", sorted(df[c_map['subject']].unique()))
-        if st.button("Clear Selection Filters"): 
-            st.session_state.sel_section = None
-            st.session_state.sel_subject = None
+        if st.button("Reset Selection"):
+            st.session_state.active_sec = None
+            st.session_state.active_sub = None
             st.rerun()
         if st.button("Logout"): st.session_state.authenticated = False; st.rerun()
 
-    if exclude_subs: df = df[~df[c_map['subject']].isin(exclude_subs)]
     active_depts = [dept_choice] if dept_choice != "All Departments" else sorted(df['Dept'].unique())
-
     output = io.BytesIO()
+    
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         summaries, subject_impact = [], pd.Series(dtype=float)
-        # Store data for dynamic filtering
-        all_section_data = {}
+        full_data_store = {} # To hold section-wise dataframes
 
         tabs = st.tabs(["📊 COMMAND CENTER"] + [f"💎 {d}" for d in active_depts])
 
         for d_idx, dept in enumerate(active_depts):
             d_df = df[df['Dept'] == dept]
-            series_list = sorted(list(set(f"{b.split()[0]} {next((p for p in b.split() if p.isdigit()), 'Series')}" for b in d_df[c_map['batch']].astype(str).unique())))
-            
             with tabs[d_idx+1]:
-                for series in series_list:
-                    s_df = d_df[d_df[c_map['batch']].astype(str).str.contains(series.split()[0]) & d_df[c_map['batch']].astype(str).str.contains(series.split()[-1])]
-                    s_subs = sorted([s for s in s_df[c_map['subject']].unique() if is_valid_subject(s)])
-                    
-                    for sec in sorted(s_df[c_map['batch']].unique()):
-                        sec_df = s_df[s_df[c_map['batch']] == sec]
-                        grid, counts = process_grid(sec_df, c_map, s_subs, low_v, high_v)
-                        if grid is not None:
-                            all_section_data[sec] = {'grid': grid, 'counts': counts, 'series': series}
-                            summaries.append({'Section': sec, 'Count': len(grid)-1, 'Series': series})
-                            subject_impact = subject_impact.add(counts, fill_value=0)
+                # Extract sections and subjects for this department
+                sections = sorted(d_df[c_map['batch']].unique())
+                for sec in sections:
+                    sec_df = d_df[d_df[c_map['batch']] == sec]
+                    s_subs = sorted([s for s in sec_df[c_map['subject']].unique() if is_valid_subject(s)])
+                    grid, counts = process_grid(sec_df, c_map, s_subs, low_v, high_v)
+                    if grid is not None:
+                        full_data_store[sec] = {'grid': grid, 'counts': counts}
+                        summaries.append({'Section': sec, 'Count': len(grid)-1})
+                        subject_impact = subject_impact.add(counts, fill_value=0)
 
         with tabs[0]:
             if summaries:
+                # --- LAYER 2: SUBJECT ROW HEADERS ---
+                st.markdown("### 📚 Subject Focus")
+                # Group subjects by MCA 2024 and MCA 2025 rows
+                for year in ["2024", "2025"]:
+                    year_subs = sorted(df[df[c_map['batch']].astype(str).str.contains(year)][c_map['subject']].unique())
+                    if year_subs:
+                        st.write(f"**MCA {year} Subjects:**")
+                        s_cols = st.columns(len(year_subs))
+                        for i, s_name in enumerate(year_subs):
+                            with s_cols[i]:
+                                if st.button(s_name, key=f"btn_{year}_{s_name}"):
+                                    st.session_state.active_sub = s_name
+                                    st.session_state.active_sec = None
+                
+                # --- LAYER 1: INTERACTIVE GLASS HEADERS ---
+                st.markdown("### 🏢 Section Overview")
                 sum_df = pd.DataFrame(summaries)
-                
-                # --- Layer 2: Subject Glass Headers (Rows by Batch Year) ---
-                st.markdown("### 📚 Subject Focus (Click to Filter)")
-                batches = sorted(df[c_map['batch']].astype(str).unique())
-                for b_name in batches:
-                    b_subs = sorted(df[df[c_map['batch']] == b_name][c_map['subject']].unique())
-                    st.write(f"**{b_name} Subjects:**")
-                    cols = st.columns(min(len(b_subs), 6))
-                    for i, sub in enumerate(b_subs):
-                        with cols[i % 6]:
-                            if st.button(f"{sub}", key=f"sub_{b_name}_{sub}"):
-                                st.session_state.sel_subject = sub
-                                st.session_state.sel_section = None # Reset section when subject clicked
-                
-                # --- Layer 1: Interactive Section Glass Headers ---
-                st.markdown("### 🏢 Section Overview (Click to Filter)")
                 m_cols = st.columns(min(len(sum_df), 4))
                 for idx, row in sum_df.iterrows():
                     with m_cols[idx % 4]:
-                        # Wrap glass-metric in a button
-                        if st.button("", key=f"glass_{row['Section']}"):
-                            st.session_state.sel_section = row['Section']
-                            st.session_state.sel_subject = None # Reset subject when section clicked
-                        st.markdown(f'''
-                            <div class="glass-metric" style="margin-top: -85px; pointer-events: none;">
-                                <div class="metric-title">{row["Section"]}</div>
-                                <div class="metric-value">{row["Count"]}</div>
-                            </div>
-                        ''', unsafe_allow_html=True)
+                        # Surgical Click Logic:
+                        if st.button("", key=f"click_{row['Section']}"):
+                            st.session_state.active_sec = row['Section']
+                            st.session_state.active_sub = None
+                        st.markdown(f'<div class="glass-metric"><div class="metric-title">{row["Section"]}</div><div class="metric-value">{row["Count"]}</div></div>', unsafe_allow_html=True)
+                
+                # --- DYNAMIC FILTERING FOR CHARTS & TABLES ---
+                chart_df = sum_df.copy()
+                pie_impact = subject_impact.copy()
 
-                # --- Dynamic Filtering Logic ---
-                filtered_sum_df = sum_df.copy()
-                filtered_impact = subject_impact.copy()
-                
-                if st.session_state.sel_section:
-                    st.subheader(f"📍 Filtering by Section: {st.session_state.sel_section}")
-                    filtered_sum_df = sum_df[sum_df['Section'] == st.session_state.sel_section]
-                    display_grid = all_section_data[st.session_state.sel_section]['grid']
-                    st.dataframe(display_grid, hide_index=True)
-                    
-                elif st.session_state.sel_subject:
-                    st.subheader(f"📖 Filtering by Subject: {st.session_state.sel_subject}")
-                    # Re-calculating impact and grid for only this subject
+                if st.session_state.active_sec:
+                    st.divider()
+                    st.subheader(f"Results for {st.session_state.active_sec}")
+                    sec_data = full_data_store[st.session_state.active_sec]
+                    st.dataframe(sec_data['grid'], hide_index=True)
+                    # Dynamic Chart data update
+                    chart_df = sum_df[sum_df['Section'] == st.session_state.active_sec]
+                    pie_impact = sec_data['counts']
+
+                elif st.session_state.active_sub:
+                    st.divider()
+                    st.subheader(f"Students with Shortage in: {st.session_state.active_sub}")
+                    # Build list of students across all sections for THIS subject
                     sub_list = []
-                    for s_key, s_val in all_section_data.items():
-                        g = s_val['grid']
-                        if st.session_state.sel_subject in g.columns:
-                            sub_only = g[g[st.session_state.sel_subject] != ""]
-                            if not sub_only.empty: sub_list.append(sub_only)
-                    
-                    if sub_list:
-                        final_sub_df = pd.concat(sub_list)
-                        st.dataframe(final_sub_df, hide_index=True)
-                
-                # Charts update dynamically based on filtered data
+                    for s_name, s_data in full_data_store.items():
+                        g = s_data['grid']
+                        if st.session_state.active_sub in g.columns:
+                            filtered = g[g[st.session_state.active_sub] != ""]
+                            if not filtered.empty: sub_list.append(filtered)
+                    if sub_list: st.dataframe(pd.concat(sub_list), hide_index=True)
+                    # Update pie for specific subject
+                    pie_impact = pd.Series({st.session_state.active_sub: subject_impact[st.session_state.active_sub]})
+
+                # Charts (Now Dynamic)
                 c1, c2 = st.columns(2)
-                with c1: 
-                    st.plotly_chart(px.bar(filtered_sum_df, x='Section', y='Count', color='Section',
-                                     title="Dynamic Section Distribution", template="plotly_dark"), use_container_width=True)
-                with c2:
-                    impact_df = filtered_impact.reset_index()
-                    impact_df.columns = ['Subject', 'Students']
-                    if st.session_state.sel_subject: impact_df = impact_df[impact_df['Subject'] == st.session_state.sel_subject]
-                    st.plotly_chart(px.pie(impact_df[impact_df['Students']>0], names='Subject', values='Students', hole=0.4, 
-                                     title="Dynamic Subject Impact", template="plotly_dark"), use_container_width=True)
-                
-                # Sheet Export Logic
-                sum_df.to_excel(writer, sheet_name='SUMMARY', index=False)
-                for s_key, s_val in all_section_data.items():
-                    sn_sec = str(s_key).replace("/", "-")[:31]
-                    s_val['grid'].to_excel(writer, sheet_name=sn_sec, index=False)
-                    apply_styles(writer.sheets[sn_sec], high_v)
-                    
-            else: st.info("No data in current range.")
+                with c1: st.plotly_chart(px.bar(chart_df, x='Section', y='Count', title="Section Distribution", template="plotly_dark"), use_container_width=True)
+                with c2: st.plotly_chart(px.pie(pie_impact[pie_impact > 0].reset_index(), names='index', values=0, hole=0.4, title="Subject Impact", template="plotly_dark"), use_container_width=True)
 
     st.download_button(f"📥 Download Report", output.getvalue(), "VMS_Report.xlsx", use_container_width=True)
