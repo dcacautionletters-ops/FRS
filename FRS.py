@@ -52,78 +52,31 @@ def is_valid_subject(subject_name):
     s_upper = str(subject_name).upper()
     return not any(bad in s_upper for bad in KEYWORDS_TO_IGNORE)
 
-def get_bracket_summary(data_df, cols, subjects, threshold):
-    summary_data = []
-    for sub in subjects:
-        sub_vals = pd.to_numeric(data_df[data_df[cols['subject']] == sub][cols['attendance']], errors='coerce').dropna().round(2)
-        b1 = len(sub_vals[(sub_vals >= 0) & (sub_vals < 50)])
-        b2 = len(sub_vals[(sub_vals >= 50) & (sub_vals < 60)])
-        b3a = len(sub_vals[(sub_vals >= 60) & (sub_vals < 64.5)])
-        b3b = len(sub_vals[(sub_vals >= 64.5) & (sub_vals < 70)])
-        b4 = len(sub_vals[(sub_vals >= 70) & (sub_vals < 75)])
-        
-        row = {"Subject": sub}
-        total = 0
-        if threshold > 0: row["0.00-49.99"] = b1; total += b1
-        if threshold > 50: row["50.00-59.99"] = b2; total += b2
-        if threshold > 60:
-            row["60.00-64.49"] = b3a
-            row["64.50-69.99"] = b3b
-            total += (b3a + b3b)
-        if threshold > 70: row["70.00-74.99"] = b4; total += b4
-            
-        row["Total"] = total
-        summary_data.append(row)
-    return pd.DataFrame(summary_data)
-
-def apply_styles(ws, threshold, is_summary=False):
+def apply_styles(ws):
     thin = Side(style='thin', color="4D4D4D")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
     h_fill = PatternFill(start_color="2C3E50", end_color="2C3E50", fill_type="solid")
-    crit_fill = PatternFill(start_color="C0392B", end_color="C0392B", fill_type="solid") 
-    warn_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid") 
-    
     for col in range(1, ws.max_column + 1):
         cell = ws.cell(row=1, column=col)
         cell.font, cell.fill, cell.border = Font(bold=True, color="FFFFFF"), h_fill, border
         ws.column_dimensions[cell.column_letter].width = 20
 
-    for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
-        for cell in row:
-            cell.border, cell.alignment = border, Alignment(horizontal="center")
-
-def process_grid(data_df, cols, batch_subjects, low_thresh, high_thresh, show_all=False):
-    if data_df.empty: return None, None
-    data_df = data_df.copy()
-    data_df[cols['attendance']] = pd.to_numeric(data_df[cols['attendance']], errors='coerce').round(2)
+def process_grid(data_df, cols, batch_subjects, low_thresh, high_thresh):
+    if data_df.empty: return None
+    df_proc = data_df.copy()
+    df_proc[cols['attendance']] = pd.to_numeric(df_proc[cols['attendance']], errors='coerce').round(2)
     
-    full_grid = data_df.pivot_table(index=[cols['roll'], cols['name'], cols['batch'], cols['sem']],
-                                    columns=cols['subject'], values=cols['attendance'], sort=False).reset_index()
+    grid = df_proc.pivot_table(index=[cols['roll'], cols['name'], cols['batch']],
+                                columns=cols['subject'], values=cols['attendance'], sort=False).reset_index()
     
-    final_subjects = [s for s in batch_subjects if is_valid_subject(s)]
-    for sub in final_subjects:
-        if sub not in full_grid.columns: full_grid[sub] = None
-        full_grid[sub] = pd.to_numeric(full_grid[sub], errors='coerce').round(2)
-
-    theory_cols = [c for c in final_subjects if not any(x in str(c).upper() for x in ["LAB", "PRACTICAL", "WORKSHOP"])]
-    full_grid['Theory Avg'] = full_grid[theory_cols].mean(axis=1).round(2)
-    full_grid['Final Avg'] = full_grid[final_subjects].mean(axis=1).round(2)
+    # Filter for students who have AT LEAST ONE subject in range
+    mask = (grid[batch_subjects] >= low_thresh) & (grid[batch_subjects] <= high_thresh)
+    grid = grid[mask.any(axis=1)].copy()
     
-    grid_mask = (full_grid[final_subjects] >= low_thresh) & (full_grid[final_subjects] <= high_thresh)
-    shortage_grid = full_grid.copy() if show_all else full_grid[grid_mask.any(axis=1)].copy()
-    
-    if shortage_grid.empty: return None, None
-    
-    active_mask = (shortage_grid[final_subjects] >= low_thresh) & (shortage_grid[final_subjects] <= high_thresh)
-    shortage_grid['Subjects in Range'] = active_mask.sum(axis=1)
-    sub_counts = active_mask.sum()
-    
-    if not show_all:
-        for sub in final_subjects:
-            shortage_grid[sub] = shortage_grid[sub].apply(lambda x: x if (pd.notnull(x) and low_thresh <= x <= high_thresh) else "")
-    
-    shortage_grid.insert(0, 'Sl No.', range(1, len(shortage_grid) + 1))
-    return shortage_grid, sub_counts
+    if not grid.empty:
+        grid.insert(0, 'Sl No.', range(1, len(grid) + 1))
+        return grid
+    return None
 
 # --- 4. DASHBOARD INTERFACE ---
 uploaded_file = st.file_uploader("📂 Upload Universal Attendance File", type=["xlsx"])
@@ -136,7 +89,7 @@ if uploaded_file:
             h_row = i; break
     
     df = pd.read_excel(uploaded_file, header=h_row)
-    c_map = {'sem': df.columns[5]} 
+    c_map = {}
     for c in df.columns:
         cs = str(c).strip()
         if "Roll No" in cs: c_map['roll'] = c
@@ -150,56 +103,57 @@ if uploaded_file:
     
     with st.sidebar:
         st.markdown("### 🛠️ Parameters")
-        c_l, c_h = st.columns(2)
-        with c_l: low_v = st.number_input("From (%)", 0.0, 100.0, 0.0)
-        with c_h: high_v = st.number_input("To (%)", 0.0, 100.0, 75.0)
+        low_v = st.number_input("From (%)", 0.0, 100.0, 0.0)
+        high_v = st.number_input("To (%)", 0.0, 100.0, 75.0)
         dept_choice = st.selectbox("Select Department", ["All"] + sorted(df['Dept'].unique()))
         if st.button("Logout"): st.session_state.authenticated = False; st.rerun()
 
     active_depts = [dept_choice] if dept_choice != "All" else sorted(df['Dept'].unique())
     output = io.BytesIO()
     
+    # Pre-calculate data for the Pivot Summary
+    range_df = df[(pd.to_numeric(df[c_map['attendance']], errors='coerce') >= low_v) & 
+                  (pd.to_numeric(df[c_map['attendance']], errors='coerce') <= high_v)]
+
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        # 1. ALWAYS WRITE A SUMMARY SHEET FIRST (Prevents your IndexError)
+        summary_list = []
+        for dept in active_depts:
+            count = len(range_df[range_df['Dept'] == dept][c_map['roll']].unique())
+            summary_list.append({"Department": dept, "Total Students in Range": count})
+        pd.DataFrame(summary_list).to_excel(writer, sheet_name="OVERALL_SUMMARY", index=False)
+
         tabs = st.tabs(["📊 COMMAND CENTER"] + [f"💎 {d}" for d in active_depts])
 
-        # Global storage for pivot summary
-        pivot_summary_list = []
+        with tabs[0]:
+            st.subheader("Global Statistics")
+            st.dataframe(pd.DataFrame(summary_list), hide_index=True, use_container_width=True)
 
         for d_idx, dept in enumerate(active_depts):
-            d_df = df[df['Dept'] == dept]
+            dept_df = df[df['Dept'] == dept]
+            dept_range_df = range_df[range_df['Dept'] == dept]
+            dept_subs = sorted([s for s in dept_df[c_map['subject']].unique() if is_valid_subject(s)])
+            
             with tabs[d_idx+1]:
-                # Subject list for this dept
-                dept_subs = sorted([s for s in d_df[c_map['subject']].unique() if is_valid_subject(s)])
-                
-                # --- PIVOT TABLE SUMMARY AT BOTTOM LOGIC ---
-                st.markdown("### 📋 Subject wise Student Count")
-                
-                # Filter data based on sidebar range
-                range_df = d_df[(pd.to_numeric(d_df[c_map['attendance']], errors='coerce') >= low_v) & 
-                                (pd.to_numeric(d_df[c_map['attendance']], errors='coerce') <= high_v)]
+                st.markdown(f"### 📋 {dept} - Subject wise Summary")
                 
                 pivot_data = []
                 for i, sub in enumerate(dept_subs, 1):
-                    sub_students = range_df[range_df[c_map['subject']] == sub]
+                    sub_students = dept_range_df[dept_range_df[c_map['subject']] == sub]
                     count = len(sub_students)
                     pivot_data.append({"Sl No.": i, "Subject": sub, "Total Students": count})
-                
-                pivot_df = pd.DataFrame(pivot_data)
-                
-                # Display the Pivot Table and "Clickable" functionality
-                for index, row in pivot_df.iterrows():
-                    col_p1, col_p2 = st.columns([0.1, 0.9])
-                    with col_p1: st.write(f"**{row['Sl No.']}**")
-                    with col_p2:
-                        label = f"{row['Subject']} — ({row['Total Students']} Students)"
-                        with st.expander(label):
-                            student_list = range_df[range_df[c_map['subject']] == row['Subject']][[c_map['roll'], c_map['name'], c_map['batch'], c_map['attendance']]]
-                            if not student_list.empty:
-                                st.dataframe(student_list, use_container_width=True, hide_index=True)
-                            else:
-                                st.info("No students in this range for this subject.")
+                    
+                    # Expandable list for each subject
+                    label = f"{sub} — ({count} Students)"
+                    with st.expander(label):
+                        if count > 0:
+                            st.dataframe(sub_students[[c_map['roll'], c_map['name'], c_map['batch'], c_map['attendance']]], hide_index=True)
+                        else:
+                            st.info("No students found.")
 
-                # Excel Export Logic (Original sheets retained)
-                # [Logic for processing grids for Excel continues here as per original code...]
-                
+                # Write Dept Pivot to Excel
+                dept_pivot_df = pd.DataFrame(pivot_data)
+                dept_pivot_df.to_excel(writer, sheet_name=f"{dept}_Pivot", index=False)
+                apply_styles(writer.sheets[f"{dept}_Pivot"])
+
     st.download_button(f"📥 Download Report", output.getvalue(), "VMS_Report.xlsx", use_container_width=True)
